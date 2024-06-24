@@ -16,7 +16,12 @@ bump: ## bump hrp version, e.g. make bump version=4.0.0
 .PHONY: build
 build: ## build hrp cli tool
 	@echo "[info] build hrp cli tool"
-	@. scripts/build.sh
+	@. scripts/build.sh $(tags)
+
+.PHONY: install-hooks
+install-hooks: ## install git hooks
+	@find scripts -name "install-*-hook" | awk -F'-' '{s=$$2;for(i=3;i<NF;i++){s=s"-"$$i;}print s;}' | while read f; do bash "scripts/install-$$f-hook"; done
+	@echo "[OK] install all hooks"
 
 .PHONY: help
 help: ## print make commands

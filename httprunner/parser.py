@@ -1,16 +1,14 @@
 import ast
 import builtins
-import re
 import os
-from typing import Any, Set, Text, Callable, List, Dict, Union
+import re
+from typing import Any, Callable, Dict, List, Set, Text
+from urllib.parse import urlparse
 
 from loguru import logger
-from sentry_sdk import capture_exception
 
-from httprunner import loader, utils, exceptions
-from httprunner.models import VariablesMapping, FunctionsMapping
-
-absolute_http_url_regexp = re.compile(r"^https?://", re.I)
+from httprunner import exceptions, loader, utils
+from httprunner.models import FunctionsMapping, VariablesMapping
 
 # use $$ to escape $ notation
 dolloar_regex_compile = re.compile(r"\$\$")
@@ -22,7 +20,7 @@ function_regex_compile = re.compile(r"\$\{([a-zA-Z_]\w*)\(([\$\w\.\-/\s=,]*)\)\}
 
 
 def parse_string_value(str_value: Text) -> Any:
-    """ parse string to number if possible
+    """parse string to number if possible
     e.g. "123" => 123
          "12.2" => 12.3
          "abc" => "abc"
@@ -37,18 +35,30 @@ def parse_string_value(str_value: Text) -> Any:
         return str_value
 
 
-def build_url(base_url, path):
-    """ prepend url with base_url unless it's already an absolute URL """
-    if absolute_http_url_regexp.match(path):
-        return path
-    elif base_url:
-        return "{}/{}".format(base_url.rstrip("/"), path.lstrip("/"))
-    else:
+def build_url(base_url, step_url):
+    """prepend url with base_url unless it's already an absolute URL"""
+    o_step_url = urlparse(step_url)
+    if o_step_url.netloc != "":
+        # step url is absolute url
+        return step_url
+
+    # step url is relative, based on base url
+    o_base_url = urlparse(base_url)
+    if o_base_url.netloc == "":
+        # missed base url
         raise exceptions.ParamsError("base url missed!")
+
+    path = o_base_url.path.rstrip("/") + "/" + o_step_url.path.lstrip("/")
+    o_step_url = (
+        o_step_url._replace(scheme=o_base_url.scheme)
+        ._replace(netloc=o_base_url.netloc)
+        ._replace(path=path)
+    )
+    return o_step_url.geturl()
 
 
 def regex_findall_variables(raw_string: Text) -> List[Text]:
-    """ extract all variable names from content, which is in format $variable
+    """extract all variable names from content, which is in format $variable
 
     Args:
         raw_string (str): string content
@@ -107,7 +117,7 @@ def regex_findall_variables(raw_string: Text) -> List[Text]:
 
 
 def regex_findall_functions(content: Text) -> List[Text]:
-    """ extract all functions from string content, which are in format ${fun()}
+    """extract all functions from string content, which are in format ${fun()}
 
     Args:
         content (str): string content
@@ -135,13 +145,12 @@ def regex_findall_functions(content: Text) -> List[Text]:
     try:
         return function_regex_compile.findall(content)
     except TypeError as ex:
-        capture_exception(ex)
+        logger.error(f"regex findall functions error: {ex}")
         return []
 
 
 def extract_variables(content: Any) -> Set:
-    """ extract all variables in content recursively.
-    """
+    """extract all variables in content recursively."""
     if isinstance(content, (list, set, tuple)):
         variables = set()
         for item in content:
@@ -161,7 +170,7 @@ def extract_variables(content: Any) -> Set:
 
 
 def parse_function_params(params: Text) -> Dict:
-    """ parse function params to args and kwargs.
+    """parse function params to args and kwargs.
 
     Args:
         params (str): function param in string
@@ -212,7 +221,7 @@ def parse_function_params(params: Text) -> Dict:
 def get_mapping_variable(
     variable_name: Text, variables_mapping: VariablesMapping
 ) -> Any:
-    """ get variable from variables_mapping.
+    """get variable from variables_mapping.
 
     Args:
         variable_name (str): variable name
@@ -237,7 +246,7 @@ def get_mapping_variable(
 def get_mapping_function(
     function_name: Text, functions_mapping: FunctionsMapping
 ) -> Callable:
-    """ get function from functions_mapping,
+    """get function from functions_mapping,
         if not found, then try to check if builtin function.
 
     Args:
@@ -287,7 +296,7 @@ def parse_string(
     variables_mapping: VariablesMapping,
     functions_mapping: FunctionsMapping,
 ) -> Any:
-    """ parse string content with variables and functions mapping.
+    """parse string content with variables and functions mapping.
 
     Args:
         raw_string: raw string content to be parsed.
@@ -394,8 +403,8 @@ def parse_data(
     variables_mapping: VariablesMapping = None,
     functions_mapping: FunctionsMapping = None,
 ) -> Any:
-    """ parse raw data with evaluated variables mapping.
-        Notice: variables_mapping should not contain any variable or function.
+    """parse raw data with evaluated variables mapping.
+    Notice: variables_mapping should not contain any variable or function.
     """
     if isinstance(raw_data, str):
         # content in string format may contains variables and functions
@@ -467,8 +476,10 @@ def parse_variables_mapping(
     return parsed_variables
 
 
-def parse_parameters(parameters: Dict,) -> List[Dict]:
-    """ parse parameters and generate cartesian product.
+def parse_parameters(
+    parameters: Dict,
+) -> List[Dict]:
+    """parse parameters and generate cartesian product.
 
     Args:
         parameters (Dict) parameters: parameter name and value mapping
@@ -572,3 +583,24 @@ def parse_parameters(parameters: Dict,) -> List[Dict]:
         parsed_parameters_list.append(parameter_content_list)
 
     return utils.gen_cartesian_product(*parsed_parameters_list)
+
+
+class Parser(object):
+    def __init__(self, functions_mapping: FunctionsMapping = None) -> None:
+        self.functions_mapping = functions_mapping
+
+    def parse_string(
+        self, raw_string: Text, variables_mapping: VariablesMapping
+    ) -> Any:
+        return parse_string(raw_string, variables_mapping, self.functions_mapping)
+
+    def parse_variables(self, variables_mapping: VariablesMapping) -> VariablesMapping:
+        return parse_variables_mapping(variables_mapping, self.functions_mapping)
+
+    def parse_data(
+        self, raw_data: Any, variables_mapping: VariablesMapping = None
+    ) -> Any:
+        return parse_data(raw_data, variables_mapping, self.functions_mapping)
+
+    def get_mapping_function(self, func_name: Text) -> Callable:
+        return get_mapping_function(func_name, self.functions_mapping)

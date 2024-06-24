@@ -1,5 +1,5 @@
 """
-This module handles compatibility issues between testcase format v2 and v3.
+This module handles compatibility issues between testcase format v2, v3 and v4.
 """
 import os
 import sys
@@ -14,24 +14,10 @@ from httprunner.utils import sort_dict_by_custom_order
 
 
 def convert_variables(
-    raw_variables: Union[Dict, List, Text], test_path: Text
+    raw_variables: Union[Dict, Text], test_path: Text
 ) -> Dict[Text, Any]:
-
     if isinstance(raw_variables, Dict):
         return raw_variables
-
-    if isinstance(raw_variables, List):
-        # [{"var1": 1}, {"var2": 2}]
-        variables: Dict[Text, Any] = {}
-        for var_item in raw_variables:
-            if not isinstance(var_item, Dict) or len(var_item) != 1:
-                raise exceptions.TestCaseFormatError(
-                    f"Invalid variables format: {raw_variables}"
-                )
-
-            variables.update(var_item)
-
-        return variables
 
     elif isinstance(raw_variables, Text):
         # get variables by function, e.g. ${get_variables()}
@@ -46,6 +32,18 @@ def convert_variables(
         )
 
 
+def _convert_request(request: Dict) -> Dict:
+    if "body" in request:
+        content_type = ""
+        if "headers" in request and "Content-Type" in request["headers"]:
+            content_type = request["headers"]["Content-Type"]
+        if content_type.startswith("application/json"):
+            request["json"] = request.pop("body")
+        else:
+            request["data"] = request.pop("body")
+    return _sort_request_by_custom_order(request)
+
+
 def _convert_jmespath(raw: Text) -> Text:
     if not isinstance(raw, Text):
         raise exceptions.TestCaseFormatError(f"Invalid jmespath extractor: {raw}")
@@ -56,32 +54,19 @@ def _convert_jmespath(raw: Text) -> Text:
     elif raw.startswith("json"):
         raw = f"body{raw[len('json'):]}"
 
-    raw_list = []
-    for item in raw.split("."):
-        if "-" in item and "[-" not in item:
-            # add quotes for field with separator
+    raw_list = raw.split(".")
+    for i, item in enumerate(raw_list):
+        item = item.strip('"')
+        if item.lower().startswith("content-") or item.lower() in ["user-agent"]:
+            # add quotes for some field in white list
             # e.g. headers.Content-Type => headers."Content-Type"
-            # also need to avoid replacing negative index in jmespath
-            # e.g. body.users[-1] => body.users[-1], keep unchanged
-            item = item.strip('"')
-            raw_list.append(f'"{item}"')
-        elif item.isdigit():
-            # convert lst.0.name to lst[0].name
-            if len(raw_list) == 0:
-                logger.error(f"Invalid jmespath: {raw}")
-                sys.exit(1)
-
-            last_item = raw_list.pop()
-            item = f"{last_item}[{item}]"
-            raw_list.append(item)
-        else:
-            raw_list.append(item)
+            raw_list[i] = f'"{item}"'
 
     return ".".join(raw_list)
 
 
 def _convert_extractors(extractors: Union[List, Dict]) -> Dict:
-    """ convert extract list(v2) to dict(v3)
+    """convert extract list(v2) to dict(v3)
 
     Args:
         extractors: [{"varA": "content.varA"}, {"varB": "json.varB"}]
@@ -168,6 +153,9 @@ def _ensure_step_attachment(step: Dict) -> Dict:
         "name": step["name"],
     }
 
+    if "request" in step:
+        test_dict["request"] = _convert_request(step["request"])
+
     if "variables" in step:
         test_dict["variables"] = step["variables"]
 
@@ -196,11 +184,11 @@ def _ensure_step_attachment(step: Dict) -> Dict:
     return test_dict
 
 
-def ensure_testcase_v3_api(api_content: Dict) -> Dict:
-    logger.info("convert api in v2 to testcase format v3")
+def ensure_testcase_v4_api(api_content: Dict) -> Dict:
+    logger.info("convert api in v2/v3 to testcase format v4")
 
     teststep = {
-        "request": _sort_request_by_custom_order(api_content["request"]),
+        "request": _convert_request(api_content["request"]),
     }
     teststep.update(_ensure_step_attachment(api_content))
 
@@ -217,8 +205,8 @@ def ensure_testcase_v3_api(api_content: Dict) -> Dict:
     }
 
 
-def ensure_testcase_v3(test_content: Dict) -> Dict:
-    logger.info("ensure compatibility with testcase format v2")
+def ensure_testcase_v4(test_content: Dict) -> Dict:
+    logger.info("ensure compatibility with testcase format v2/v3")
 
     v3_content = {"config": test_content["config"], "teststeps": []}
 
@@ -236,7 +224,7 @@ def ensure_testcase_v3(test_content: Dict) -> Dict:
         teststep = {}
 
         if "request" in step:
-            teststep["request"] = _sort_request_by_custom_order(step.pop("request"))
+            pass
         elif "api" in step:
             teststep["testcase"] = step.pop("api")
         elif "testcase" in step:
@@ -253,16 +241,15 @@ def ensure_testcase_v3(test_content: Dict) -> Dict:
 
 
 def ensure_cli_args(args: List) -> List:
-    """ ensure compatibility with deprecated cli args in v2
-    """
+    """ensure compatibility with deprecated cli args in v2"""
     # remove deprecated --failfast
     if "--failfast" in args:
-        logger.warning(f"remove deprecated argument: --failfast")
+        logger.warning("remove deprecated argument: --failfast")
         args.pop(args.index("--failfast"))
 
     # convert --report-file to --html
     if "--report-file" in args:
-        logger.warning(f"replace deprecated argument --report-file with --html")
+        logger.warning("replace deprecated argument --report-file with --html")
         index = args.index("--report-file")
         args[index] = "--html"
         args.append("--self-contained-html")
@@ -270,7 +257,7 @@ def ensure_cli_args(args: List) -> List:
     # keep compatibility with --save-tests in v2
     if "--save-tests" in args:
         logger.warning(
-            f"generate conftest.py keep compatibility with --save-tests in v2"
+            "generate conftest.py keep compatibility with --save-tests in v2"
         )
         args.pop(args.index("--save-tests"))
         _generate_conftest_for_summary(args)
@@ -303,13 +290,13 @@ from httprunner.utils import get_platform, ExtendJSONEncoder
 @pytest.fixture(scope="session", autouse=True)
 def session_fixture(request):
     """setup and teardown each task"""
-    logger.info(f"start running testcases ...")
+    logger.info("start running testcases ...")
 
     start_at = time.time()
 
     yield
 
-    logger.info(f"task finished, generate task summary for --save-tests")
+    logger.info("task finished, generate task summary for --save-tests")
 
     summary = {
         "success": True,
@@ -327,21 +314,21 @@ def session_fixture(request):
         summary["success"] &= testcase_summary.success
 
         summary["stat"]["testcases"]["total"] += 1
-        summary["stat"]["teststeps"]["total"] += len(testcase_summary.step_datas)
+        summary["stat"]["teststeps"]["total"] += len(testcase_summary.step_results)
         if testcase_summary.success:
             summary["stat"]["testcases"]["success"] += 1
             summary["stat"]["teststeps"]["successes"] += len(
-                testcase_summary.step_datas
+                testcase_summary.step_results
             )
         else:
             summary["stat"]["testcases"]["fail"] += 1
             summary["stat"]["teststeps"]["successes"] += (
-                len(testcase_summary.step_datas) - 1
+                len(testcase_summary.step_results) - 1
             )
             summary["stat"]["teststeps"]["failures"] += 1
 
         testcase_summary_json = testcase_summary.dict()
-        testcase_summary_json["records"] = testcase_summary_json.pop("step_datas")
+        testcase_summary_json["records"] = testcase_summary_json.pop("step_results")
         summary["details"].append(testcase_summary_json)
 
     summary_path = r"{{SUMMARY_PATH_PLACEHOLDER}}"
@@ -388,8 +375,7 @@ def session_fixture(request):
 
 
 def ensure_path_sep(path: Text) -> Text:
-    """ ensure compatibility with different path separators of Linux and Windows
-    """
+    """ensure compatibility with different path separators of Linux and Windows"""
     if "/" in path:
         path = os.sep.join(path.split("/"))
 

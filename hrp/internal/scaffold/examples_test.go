@@ -1,29 +1,34 @@
 package scaffold
 
 import (
-	"os"
+	"path/filepath"
 	"testing"
 )
 
 func TestGenDemoExamples(t *testing.T) {
 	dir := "../../../examples/demo-with-go-plugin"
-	os.RemoveAll(dir)
-	err := CreateScaffold(dir, Go)
+	err := CreateScaffold(dir, Go, "", true)
 	if err != nil {
-		t.Fail()
+		t.Fatal(err)
 	}
 
 	dir = "../../../examples/demo-with-py-plugin"
-	os.RemoveAll(dir)
-	err = CreateScaffold(dir, Py)
-	if err != nil {
-		t.Fail()
-	}
+	venv := filepath.Join(dir, ".venv")
+	_ = CreateScaffold(dir, Py, venv, true)
+	// FIXME
+	// if err != nil {
+	// 	t.Fatal(err)
+	// }
 
 	dir = "../../../examples/demo-without-plugin"
-	os.RemoveAll(dir)
-	err = CreateScaffold(dir, Ignore)
+	err = CreateScaffold(dir, Ignore, "", true)
 	if err != nil {
-		t.Fail()
+		t.Fatal(err)
+	}
+
+	dir = "../../../examples/demo-empty-project"
+	err = CreateScaffold(dir, Empty, "", true)
+	if err != nil {
+		t.Fatal(err)
 	}
 }

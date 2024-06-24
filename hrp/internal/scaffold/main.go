@@ -4,24 +4,35 @@ import (
 	"embed"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"time"
 
+	"github.com/httprunner/funplugin/myexec"
 	"github.com/pkg/errors"
 	"github.com/rs/zerolog/log"
 
-	"github.com/httprunner/funplugin/shared"
-	"github.com/httprunner/httprunner/hrp/internal/builtin"
-	"github.com/httprunner/httprunner/hrp/internal/sdk"
+	"github.com/httprunner/httprunner/v4/hrp"
+	"github.com/httprunner/httprunner/v4/hrp/internal/builtin"
+	"github.com/httprunner/httprunner/v4/hrp/internal/code"
+	"github.com/httprunner/httprunner/v4/hrp/internal/env"
+	"github.com/httprunner/httprunner/v4/hrp/internal/sdk"
+	"github.com/httprunner/httprunner/v4/hrp/internal/version"
 )
 
 type PluginType string
 
 const (
+	Empty  PluginType = "empty"
 	Ignore PluginType = "ignore"
 	Py     PluginType = "py"
 	Go     PluginType = "go"
 )
+
+type ProjectInfo struct {
+	ProjectName string    `json:"project_name,omitempty" yaml:"project_name,omitempty"`
+	CreateTime  time.Time `json:"create_time,omitempty" yaml:"create_time,omitempty"`
+	Version     string    `json:"hrp_version,omitempty" yaml:"hrp_version,omitempty"`
+}
 
 //go:embed templates/*
 var templatesDir embed.FS
@@ -42,24 +53,35 @@ func CopyFile(templateFile, targetFile string) error {
 	return nil
 }
 
-func CreateScaffold(projectName string, pluginType PluginType) error {
-	// report event
-	sdk.SendEvent(sdk.EventTracking{
-		Category: "Scaffold",
-		Action:   "hrp startproject",
-	})
-
-	// check if projectName exists
-	if _, err := os.Stat(projectName); err == nil {
-		log.Warn().Str("projectName", projectName).
-			Msg("project name already exists, please specify a new one.")
-		return fmt.Errorf("project name already exists")
-	}
+func CreateScaffold(projectName string, pluginType PluginType, venv string, force bool) error {
+	// report GA event
+	startTime := time.Now()
+	defer func() {
+		sdk.SendGA4Event("hrp_startproject", map[string]interface{}{
+			"pluginType":           string(pluginType),
+			"force":                force,
+			"engagement_time_msec": time.Since(startTime).Milliseconds(),
+		})
+	}()
 
 	log.Info().
 		Str("projectName", projectName).
 		Str("pluginType", string(pluginType)).
+		Bool("force", force).
 		Msg("create new scaffold project")
+
+	// check if projectName exists
+	if _, err := os.Stat(projectName); err == nil {
+		if !force {
+			log.Warn().Str("projectName", projectName).
+				Msg("project name already exists, please specify a new one.")
+			return fmt.Errorf("project name already exists")
+		}
+
+		log.Warn().Str("projectName", projectName).
+			Msg("project name already exists, remove first !!!")
+		os.RemoveAll(projectName)
+	}
 
 	// create project folders
 	if err := builtin.CreateFolder(projectName); err != nil {
@@ -74,15 +96,27 @@ func CreateScaffold(projectName string, pluginType PluginType) error {
 	if err := builtin.CreateFolder(filepath.Join(projectName, "testcases")); err != nil {
 		return err
 	}
-	if err := builtin.CreateFolder(filepath.Join(projectName, "reports")); err != nil {
+	if err := builtin.CreateFolder(filepath.Join(projectName, env.ResultsDirName)); err != nil {
 		return err
 	}
-	if err := builtin.CreateFile(filepath.Join(projectName, "reports", ".keep"), ""); err != nil {
+	if err := builtin.CreateFile(filepath.Join(projectName, env.ResultsDirName, ".keep"), ""); err != nil {
+		return err
+	}
+
+	projectInfo := &ProjectInfo{
+		ProjectName: filepath.Base(projectName),
+		CreateTime:  time.Now(),
+		Version:     version.VERSION,
+	}
+
+	// dump project information to file
+	err := builtin.Dump2JSON(projectInfo, filepath.Join(projectName, "proj.json"))
+	if err != nil {
 		return err
 	}
 
 	// create .gitignore
-	err := CopyFile("templates/gitignore", filepath.Join(projectName, ".gitignore"))
+	err = CopyFile("templates/gitignore", filepath.Join(projectName, ".gitignore"))
 	if err != nil {
 		return err
 	}
@@ -92,10 +126,19 @@ func CreateScaffold(projectName string, pluginType PluginType) error {
 		return err
 	}
 
-	// create demo testcases
-	if pluginType == Ignore {
+	// create project testcases
+	if pluginType == Empty {
+		// create empty project
+		err := CopyFile("templates/testcases/demo_empty_request.json",
+			filepath.Join(projectName, "testcases", "requests.json"))
+		if err != nil {
+			return err
+		}
+		return nil
+	} else if pluginType == Ignore {
+		// create project without funplugin
 		err := CopyFile("templates/testcases/demo_without_funplugin.json",
-			filepath.Join(projectName, "testcases", "demo_without_funplugin.json"))
+			filepath.Join(projectName, "testcases", "requests.json"))
 		if err != nil {
 			return err
 		}
@@ -103,18 +146,24 @@ func CreateScaffold(projectName string, pluginType PluginType) error {
 		return nil
 	}
 
+	// create project with funplugin
 	err = CopyFile("templates/testcases/demo_with_funplugin.json",
-		filepath.Join(projectName, "testcases", "demo_with_funplugin.json"))
+		filepath.Join(projectName, "testcases", "demo.json"))
+	if err != nil {
+		return err
+	}
+	err = CopyFile("templates/testcases/demo_requests.json",
+		filepath.Join(projectName, "testcases", "requests.json"))
 	if err != nil {
 		return err
 	}
 	err = CopyFile("templates/testcases/demo_requests.yml",
-		filepath.Join(projectName, "testcases", "demo_requests.yml"))
+		filepath.Join(projectName, "testcases", "requests.yml"))
 	if err != nil {
 		return err
 	}
 	err = CopyFile("templates/testcases/demo_ref_testcase.yml",
-		filepath.Join(projectName, "testcases", "demo_ref_testcase.yml"))
+		filepath.Join(projectName, "testcases", "ref_testcase.yml"))
 	if err != nil {
 		return err
 	}
@@ -122,7 +171,7 @@ func CreateScaffold(projectName string, pluginType PluginType) error {
 	// create debugtalk function plugin
 	switch pluginType {
 	case Py:
-		return createPythonPlugin(projectName)
+		return createPythonPlugin(projectName, venv)
 	case Go:
 		return createGoPlugin(projectName)
 	}
@@ -133,7 +182,7 @@ func CreateScaffold(projectName string, pluginType PluginType) error {
 func createGoPlugin(projectName string) error {
 	log.Info().Msg("start to create hashicorp go plugin")
 	// check go sdk
-	if err := builtin.ExecCommand(exec.Command("go", "version"), projectName); err != nil {
+	if err := myexec.RunCommand("go", "version"); err != nil {
 		return errors.Wrap(err, "go sdk not installed")
 	}
 
@@ -143,50 +192,28 @@ func createGoPlugin(projectName string) error {
 		return err
 	}
 	err := CopyFile("templates/plugin/debugtalk.go",
-		filepath.Join(projectName, "plugin", "debugtalk.go"))
+		filepath.Join(projectName, "plugin", hrp.PluginGoSourceFile))
 	if err != nil {
-		return err
-	}
-
-	// create go mod
-	if err := builtin.ExecCommand(exec.Command("go", "mod", "init", "plugin"), pluginDir); err != nil {
-		return err
-	}
-
-	// download plugin dependency
-	// funplugin version should be locked
-	funplugin := fmt.Sprintf("github.com/httprunner/funplugin@%s", shared.Version)
-	if err := builtin.ExecCommand(exec.Command("go", "get", funplugin), pluginDir); err != nil {
-		return err
-	}
-
-	// build plugin debugtalk.bin
-	if err := builtin.ExecCommand(exec.Command("go", "build", "-o", filepath.Join("..", "debugtalk.bin"), "debugtalk.go"), pluginDir); err != nil {
-		return err
+		return errors.Wrap(err, "copy debugtalk.go failed")
 	}
 
 	return nil
 }
 
-func createPythonPlugin(projectName string) error {
+func createPythonPlugin(projectName, venv string) error {
 	log.Info().Msg("start to create hashicorp python plugin")
 
 	// create debugtalk.py
-	pluginFile := filepath.Join(projectName, "debugtalk.py")
+	pluginFile := filepath.Join(projectName, hrp.PluginPySourceFile)
 	err := CopyFile("templates/plugin/debugtalk.py", pluginFile)
 	if err != nil {
 		return errors.Wrap(err, "copy file failed")
 	}
 
-	// create python venv
-	home, err := os.UserHomeDir()
+	packages := []string{"funppy", "httprunner"}
+	_, err = myexec.EnsurePython3Venv(venv, packages...)
 	if err != nil {
-		return errors.Wrap(err, "get user home dir failed")
-	}
-	venvDir := filepath.Join(home, ".hrp", "venv")
-	_, err = shared.EnsurePython3Venv(venvDir)
-	if err != nil {
-		return errors.Wrap(err, "ensure python venv failed")
+		return errors.Wrap(code.InvalidPython3Venv, err.Error())
 	}
 
 	return nil

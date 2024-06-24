@@ -9,7 +9,7 @@ from loguru import logger
 from httprunner import __description__, __version__
 from httprunner.compat import ensure_cli_args
 from httprunner.make import init_make_parser, main_make
-from httprunner.utils import ga_client, init_sentry_sdk
+from httprunner.utils import ga4_client, init_logger, init_sentry_sdk
 
 init_sentry_sdk()
 
@@ -22,7 +22,7 @@ def init_parser_run(subparsers):
 
 
 def main_run(extra_args) -> enum.IntEnum:
-    ga_client.track_event("RunAPITests", "hrun")
+    ga4_client.send_event("hrun")
     # keep compatibility with v2
     extra_args = ensure_cli_args(extra_args)
 
@@ -55,15 +55,14 @@ def main_run(extra_args) -> enum.IntEnum:
 
 
 def main():
-    """ API test: parse command line options and run commands.
-    """
+    """API test: parse command line options and run commands."""
     parser = argparse.ArgumentParser(description=__description__)
     parser.add_argument(
         "-V", "--version", dest="version", action="store_true", help="show version"
     )
 
     subparsers = parser.add_subparsers(help="sub-command help")
-    sub_parser_run = init_parser_run(subparsers)
+    init_parser_run(subparsers)
     sub_parser_make = init_make_parser(subparsers)
 
     if len(sys.argv) == 1:
@@ -93,7 +92,7 @@ def main():
         sys.exit(0)
 
     extra_args = []
-    if len(sys.argv) >= 2 and sys.argv[1] in ["run", "locusts"]:
+    if len(sys.argv) >= 2 and sys.argv[1] in ["run"]:
         args, extra_args = parser.parse_known_args()
     else:
         args = parser.parse_args()
@@ -102,6 +101,19 @@ def main():
         print(f"{__version__}")
         sys.exit(0)
 
+    # set log level
+    try:
+        index = extra_args.index("--log-level")
+        if index < len(extra_args) - 1:
+            level = extra_args[index + 1]
+        else:
+            # not specify log level value
+            level = "INFO"  # default
+    except ValueError:
+        level = "INFO"  # default
+
+    init_logger(level)
+
     if sys.argv[1] == "run":
         sys.exit(main_run(extra_args))
     elif sys.argv[1] == "make":
@@ -109,8 +121,8 @@ def main():
 
 
 def main_hrun_alias():
-    """ command alias
-        hrun = httprunner run
+    """command alias
+    hrun = httprunner run
     """
     if len(sys.argv) == 2:
         if sys.argv[1] in ["-V", "--version"]:
@@ -129,8 +141,8 @@ def main_hrun_alias():
 
 
 def main_make_alias():
-    """ command alias
-        hmake = httprunner make
+    """command alias
+    hmake = httprunner make
     """
     sys.argv.insert(1, "make")
     main()

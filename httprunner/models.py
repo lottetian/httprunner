@@ -1,11 +1,8 @@
 import os
 from enum import Enum
-from typing import Any
-from typing import Dict, Text, Union, Callable
-from typing import List
+from typing import Any, Callable, Dict, List, Text, Union
 
-from pydantic import BaseModel, Field
-from pydantic import HttpUrl
+from pydantic import BaseModel, Field, HttpUrl
 
 Name = Text
 Url = Text
@@ -31,6 +28,92 @@ class MethodEnum(Text, Enum):
     PATCH = "PATCH"
 
 
+class ProtoType(Enum):
+    Binary = 1
+    CyBinary = 2
+    Compact = 3
+    Json = 4
+
+
+class TransType(Enum):
+    Buffered = 1
+    CyBuffered = 2
+    Framed = 3
+    CyFramed = 4
+
+
+# configs for thrift rpc
+class TConfigThrift(BaseModel):
+    psm: Text = None
+    env: Text = None
+    cluster: Text = None
+    target: Text = None
+    include_dirs: List[Text] = None
+    thrift_client: Any = None
+    timeout: int = 10
+    idl_path: Text = None
+    method: Text = None
+    ip: Text = "127.0.0.1"
+    port: int = 9000
+    service_name: Text = None
+    proto_type: ProtoType = ProtoType.Binary
+    trans_type: TransType = TransType.Buffered
+
+
+# configs for db
+class TConfigDB(BaseModel):
+    psm: Text = None
+    user: Text = None
+    password: Text = None
+    ip: Text = None
+    port: int = 3306
+    database: Text = None
+
+
+class TransportEnum(Text, Enum):
+    BUFFERED = "buffered"
+    FRAMED = "framed"
+
+
+class TThriftRequest(BaseModel):
+    """rpc request model"""
+
+    method: Text = ""
+    params: Dict = {}
+    thrift_client: Any = None
+    idl_path: Text = ""  # idl local path
+    timeout: int = 10  # sec
+    transport: TransportEnum = TransportEnum.BUFFERED
+    include_dirs: List[Union[Text, None]] = []  # param of thriftpy2.load
+    target: Text = ""  # tcp://{ip}:{port} or sd://psm?cluster=xx&env=xx
+    env: Text = "prod"
+    cluster: Text = "default"
+    psm: Text = ""
+    service_name: Text = None
+    ip: Text = None
+    port: int = None
+    proto_type: ProtoType = None
+    trans_type: TransType = None
+
+
+class SqlMethodEnum(Text, Enum):
+    FETCHONE = "FETCHONE"
+    FETCHMANY = "FETCHMANY"
+    FETCHALL = "FETCHALL"
+    INSERT = "INSERT"
+    UPDATE = "UPDATE"
+    DELETE = "DELETE"
+
+
+class TSqlRequest(BaseModel):
+    """sql request model"""
+
+    db_config: TConfigDB = TConfigDB()
+    method: SqlMethodEnum = None
+    sql: Text = None
+    size: int = 0  # limit nums of sql result
+
+
 class TConfig(BaseModel):
     name: Name
     verify: Verify = False
@@ -42,7 +125,9 @@ class TConfig(BaseModel):
     # teardown_hooks: Hooks = []
     export: Export = []
     path: Text = None
-    weight: int = 1
+    # configs for other protocols
+    thrift: TConfigThrift = None
+    db: TConfigDB = TConfigDB()
 
 
 class TRequest(BaseModel):
@@ -74,6 +159,10 @@ class TStep(BaseModel):
     export: Export = []
     validators: Validators = Field([], alias="validate")
     validate_script: List[Text] = []
+    retry_times: int = 0
+    retry_interval: int = 0  # sec
+    thrift_request: Union[TThriftRequest, None] = None
+    sql_request: Union[TSqlRequest, None] = None
 
 
 class TestCase(BaseModel):
@@ -87,7 +176,9 @@ class ProjectMeta(BaseModel):
     dot_env_path: Text = ""  # .env file path
     functions: FunctionsMapping = {}  # functions defined in debugtalk.py
     env: Env = {}
-    RootDir: Text = os.getcwd()  # project root directory (ensure absolute), the path debugtalk.py located
+    RootDir: Text = (
+        os.getcwd()
+    )  # project root directory (ensure absolute), the path debugtalk.py located
 
 
 class TestsMapping(BaseModel):
@@ -133,7 +224,7 @@ class ResponseData(BaseModel):
     cookies: Cookies
     encoding: Union[Text, None] = None
     content_type: Text
-    body: Union[Text, bytes, List, Dict]
+    body: Union[Text, bytes, List, Dict, None]
 
 
 class ReqRespData(BaseModel):
@@ -153,16 +244,35 @@ class SessionData(BaseModel):
     validators: Dict = {}
 
 
-class StepData(BaseModel):
+class StepResult(BaseModel):
     """teststep data, each step maybe corresponding to one request or one testcase"""
 
-    success: bool = False
     name: Text = ""  # teststep name
-    data: Union[SessionData, List['StepData']] = None
+    step_type: Text = ""  # teststep type, request or testcase
+    success: bool = False
+    data: Union[SessionData, List["StepResult"]] = None
+    elapsed: float = 0.0  # teststep elapsed time
+    content_size: float = 0  # response content size
     export_vars: VariablesMapping = {}
+    attachment: Text = ""  # teststep attachment
 
-        
-StepData.update_forward_refs()
+
+StepResult.update_forward_refs()
+
+
+class IStep(object):
+    def name(self) -> str:
+        raise NotImplementedError
+
+    def type(self) -> str:
+        raise NotImplementedError
+
+    def struct(self) -> TStep:
+        raise NotImplementedError
+
+    def run(self, runner) -> StepResult:
+        # runner: HttpRunner
+        raise NotImplementedError
 
 
 class TestCaseSummary(BaseModel):
@@ -172,25 +282,13 @@ class TestCaseSummary(BaseModel):
     time: TestCaseTime
     in_out: TestCaseInOut = {}
     log: Text = ""
-    step_datas: List[StepData] = []
+    step_results: List[StepResult] = []
 
 
 class PlatformInfo(BaseModel):
     httprunner_version: Text
     python_version: Text
     platform: Text
-
-
-class TestCaseRef(BaseModel):
-    name: Text
-    base_url: Text = ""
-    testcase: Text
-    variables: VariablesMapping = {}
-
-
-class TestSuite(BaseModel):
-    config: TConfig
-    testcases: List[TestCaseRef]
 
 
 class Stat(BaseModel):

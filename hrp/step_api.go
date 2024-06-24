@@ -3,9 +3,10 @@ package hrp
 import (
 	"fmt"
 
+	"github.com/jinzhu/copier"
 	"github.com/rs/zerolog/log"
 
-	"github.com/httprunner/httprunner/hrp/internal/builtin"
+	"github.com/httprunner/httprunner/v4/hrp/internal/builtin"
 )
 
 // IAPI represents interface for api,
@@ -49,7 +50,12 @@ func (path *APIPath) ToAPI() (*API, error) {
 	if err != nil {
 		return nil, err
 	}
+	// 1. deal with request body compatibility
+	convertCompatRequestBody(api.Request)
+	// 2. deal with validators compatibility
 	err = convertCompatValidator(api.Validators)
+	// 3. deal with extract expr including hyphen
+	convertExtract(api.Extract)
 	return api, err
 }
 
@@ -92,20 +98,21 @@ func (s *StepAPIWithOptionalArgs) Struct() *TStep {
 	return s.step
 }
 
-func (s *StepAPIWithOptionalArgs) Run(r *SessionRunner) (*StepResult, error) {
-	log.Info().Str("api", s.step.Name).Msg("run referenced api")
-
+func (s *StepAPIWithOptionalArgs) Run(r *SessionRunner) (stepResult *StepResult, err error) {
+	defer func() {
+		stepResult.StepType = stepTypeAPI
+	}()
 	// extend request with referenced API
 	api, _ := s.step.API.(*API)
-	extendWithAPI(s.step, api)
-
-	stepResult, err := runStepRequest(r, s.step)
-	if err != nil {
-		r.summary.Success = false
-		return nil, err
+	step := &TStep{}
+	// deep copy step to avoid data racing
+	if err = copier.Copy(step, s.step); err != nil {
+		log.Error().Err(err).Msg("copy step failed")
+		return
 	}
-	stepResult.StepType = stepTypeAPI
-	return stepResult, nil
+	extendWithAPI(step, api)
+	stepResult, err = runStepRequest(r, step)
+	return
 }
 
 // extend teststep with api, teststep will merge and override referenced api
@@ -116,6 +123,10 @@ func extendWithAPI(testStep *TStep, overriddenStep *API) {
 	}
 	// merge & override request
 	testStep.Request = overriddenStep.Request
+	// init upload
+	if len(testStep.Request.Upload) != 0 {
+		initUpload(testStep)
+	}
 	// merge & override variables
 	testStep.Variables = mergeVariables(testStep.Variables, overriddenStep.Variables)
 	// merge & override extractors

@@ -2,13 +2,15 @@ import unittest
 
 import requests
 
-from httprunner.response import ResponseObject
+from httprunner.parser import Parser
+from httprunner.response import ResponseObject, uniform_validator
+from httprunner.utils import HTTP_BIN_URL
 
 
 class TestResponse(unittest.TestCase):
     def setUp(self) -> None:
         resp = requests.post(
-            "https://httpbin.org/anything",
+            f"{HTTP_BIN_URL}/anything",
             json={
                 "locations": [
                     {"name": "Seattle", "state": "WA"},
@@ -18,15 +20,13 @@ class TestResponse(unittest.TestCase):
                 ]
             },
         )
-        self.resp_obj = ResponseObject(resp)
+        parser = Parser(
+            functions_mapping={"get_name": lambda: "name", "get_num": lambda x: x}
+        )
+        self.resp_obj = ResponseObject(resp, parser)
 
     def test_extract(self):
-        variables_mapping = {
-            'body': 'body'
-        }
-        functions_mapping = {
-            'get_name': lambda: 'name',
-        }
+        variables_mapping = {"body": "body"}
         extract_mapping = self.resp_obj.extract(
             {
                 "var_1": "body.json.locations[0]",
@@ -35,7 +35,6 @@ class TestResponse(unittest.TestCase):
                 "var_4": "$body.json.locations[3].${get_name()}",
             },
             variables_mapping=variables_mapping,
-            functions_mapping=functions_mapping,
         )
         self.assertEqual(extract_mapping["var_1"], {"name": "Seattle", "state": "WA"})
         self.assertEqual(extract_mapping["var_2"], "Olympia")
@@ -62,9 +61,30 @@ class TestResponse(unittest.TestCase):
 
     def test_validate_functions(self):
         variables_mapping = {"index": 1}
-        functions_mapping = {"get_num": lambda x: x}
         self.resp_obj.validate(
-            [{"eq": ["${get_num(0)}", 0]}, {"eq": ["${get_num($index)}", 1]},],
+            [
+                {"eq": ["${get_num(0)}", 0]},
+                {"eq": ["${get_num($index)}", 1]},
+            ],
             variables_mapping=variables_mapping,
-            functions_mapping=functions_mapping,
         )
+
+    def test_uniform_validator(self):
+        validators = [
+            {
+                "check": "status_code",
+                "comparator": "eq",
+                "expect": 201,
+                "message": "test",
+            },
+            {"check": "status_code", "assert": "eq", "expect": 201, "msg": "test"},
+            {"eq": ["status_code", 201, "test"]},
+        ]
+        expected = {
+            "check": "status_code",
+            "assert": "equal",
+            "expect": 201,
+            "message": "test",
+        }
+        for validator in validators:
+            self.assertEqual(uniform_validator(validator), expected)

@@ -10,7 +10,7 @@ Then you can write upload test script as below:
     - test:
         name: upload file
         request:
-            url: http://httpbin.org/upload
+            url: https://httpbin.org/upload
             method: POST
             headers:
                 Cookie: session=AAA-BBB-CCC
@@ -31,7 +31,7 @@ For compatibility, you can also write upload test script in old way:
             field2: "value2"
             m_encoder: ${multipart_encoder(file=$file, field1=$field1, field2=$field2)}
         request:
-            url: http://httpbin.org/upload
+            url: https://httpbin.org/upload
             method: POST
             headers:
                 Content-Type: ${multipart_content_type($m_encoder)}
@@ -46,8 +46,8 @@ import os
 import sys
 from typing import Text
 
-from httprunner.models import TStep, FunctionsMapping
-from httprunner.parser import parse_variables_mapping
+from httprunner.models import VariablesMapping, FunctionsMapping, TStep
+from httprunner.parser import parse_data
 from loguru import logger
 
 try:
@@ -75,8 +75,10 @@ def ensure_upload_ready():
     sys.exit(1)
 
 
-def prepare_upload_step(step: TStep, functions: FunctionsMapping):
-    """ preprocess for upload test
+def prepare_upload_step(
+    step: TStep, step_variables: VariablesMapping, functions: FunctionsMapping
+):
+    """preprocess for upload test
         replace `upload` info with MultipartEncoder
 
     Args:
@@ -84,7 +86,7 @@ def prepare_upload_step(step: TStep, functions: FunctionsMapping):
             {
                 "variables": {},
                 "request": {
-                    "url": "http://httpbin.org/upload",
+                    "url": "https://httpbin.org/upload",
                     "method": "POST",
                     "headers": {
                         "Cookie": "session=AAA-BBB-CCC"
@@ -101,17 +103,17 @@ def prepare_upload_step(step: TStep, functions: FunctionsMapping):
     if not step.request.upload:
         return
 
+    # parse upload info
+    step.request.upload = parse_data(step.request.upload, step_variables, functions)
+
     ensure_upload_ready()
     params_list = []
     for key, value in step.request.upload.items():
-        step.variables[key] = value
+        step_variables[key] = value
         params_list.append(f"{key}=${key}")
 
     params_str = ", ".join(params_list)
-    step.variables["m_encoder"] = "${multipart_encoder(" + params_str + ")}"
-
-    # parse variables
-    step.variables = parse_variables_mapping(step.variables, functions)
+    step_variables["m_encoder"] = "${multipart_encoder(" + params_str + ")}"
 
     step.request.headers["Content-Type"] = "${multipart_content_type($m_encoder)}"
 
@@ -119,7 +121,7 @@ def prepare_upload_step(step: TStep, functions: FunctionsMapping):
 
 
 def multipart_encoder(**kwargs):
-    """ initialize MultipartEncoder with uploading fields.
+    """initialize MultipartEncoder with uploading fields.
 
     Returns:
         MultipartEncoder: initialized MultipartEncoder object
@@ -136,7 +138,6 @@ def multipart_encoder(**kwargs):
     ensure_upload_ready()
     fields_dict = {}
     for key, value in kwargs.items():
-
         if os.path.isabs(value):
             # value is absolute file path
             _file_path = value
@@ -164,7 +165,7 @@ def multipart_encoder(**kwargs):
 
 
 def multipart_content_type(m_encoder) -> Text:
-    """ prepare Content-Type for request headers
+    """prepare Content-Type for request headers
 
     Args:
         m_encoder: MultipartEncoder object

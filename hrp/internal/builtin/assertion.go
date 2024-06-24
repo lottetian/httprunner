@@ -9,9 +9,9 @@ import (
 )
 
 var Assertions = map[string]func(t assert.TestingT, actual interface{}, expected interface{}, msgAndArgs ...interface{}) bool{
-	"eq":                assert.EqualValues,
-	"equals":            assert.EqualValues,
-	"equal":             assert.EqualValues,
+	"eq":                EqualValues,
+	"equals":            EqualValues,
+	"equal":             EqualValues,
 	"lt":                assert.Less,
 	"less_than":         assert.Less,
 	"le":                assert.LessOrEqual,
@@ -20,8 +20,8 @@ var Assertions = map[string]func(t assert.TestingT, actual interface{}, expected
 	"greater_than":      assert.Greater,
 	"ge":                assert.GreaterOrEqual,
 	"greater_or_equals": assert.GreaterOrEqual,
-	"ne":                assert.NotEqual,
-	"not_equal":         assert.NotEqual,
+	"ne":                NotEqual,
+	"not_equal":         NotEqual,
 	"contains":          assert.Contains,
 	"type_match":        assert.IsType,
 	// custom assertions
@@ -45,7 +45,16 @@ var Assertions = map[string]func(t assert.TestingT, actual interface{}, expected
 	"contained_by":             ContainedBy,
 	"str_eq":                   StringEqual,
 	"string_equals":            StringEqual,
+	"equal_fold":               EqualFold,
 	"regex_match":              RegexMatch,
+}
+
+func EqualValues(t assert.TestingT, actual, expected interface{}, msgAndArgs ...interface{}) bool {
+	return assert.EqualValues(t, expected, actual, msgAndArgs)
+}
+
+func NotEqual(t assert.TestingT, actual, expected interface{}, msgAndArgs ...interface{}) bool {
+	return assert.NotEqual(t, expected, actual, msgAndArgs)
 }
 
 // StartsWith check if string starts with substring
@@ -77,23 +86,29 @@ func EndsWith(t assert.TestingT, actual, expected interface{}, msgAndArgs ...int
 func EqualLength(t assert.TestingT, actual, expected interface{}, msgAndArgs ...interface{}) bool {
 	length, err := convertInt(expected)
 	if err != nil {
-		return assert.Fail(t, fmt.Sprintf("expected type is not int, got %#v", expected), msgAndArgs...)
+		return assert.Fail(t, fmt.Sprintf("expect int type, got %#v", expected), msgAndArgs...)
 	}
-
-	return assert.Len(t, actual, length, msgAndArgs...)
+	ok, l := getLen(actual)
+	if !ok {
+		return assert.Fail(t, fmt.Sprintf("actual value %v(%T) can't get length", actual, actual), msgAndArgs...)
+	}
+	if l != length {
+		return assert.Fail(t, fmt.Sprintf("%v length == %d, expect == %d", actual, l, length), msgAndArgs...)
+	}
+	return true
 }
 
 func GreaterThanLength(t assert.TestingT, actual, expected interface{}, msgAndArgs ...interface{}) bool {
 	length, err := convertInt(expected)
 	if err != nil {
-		return assert.Fail(t, fmt.Sprintf("expected type is not int, got %#v", expected), msgAndArgs...)
+		return assert.Fail(t, fmt.Sprintf("expect int type, got %#v", expected), msgAndArgs...)
 	}
 	ok, l := getLen(actual)
 	if !ok {
-		return assert.Fail(t, fmt.Sprintf("\"%s\" could not be applied builtin len()", actual), msgAndArgs...)
+		return assert.Fail(t, fmt.Sprintf("actual value %v(%T) can't get length", actual, actual), msgAndArgs...)
 	}
 	if l <= length {
-		return assert.Fail(t, fmt.Sprintf("\"%s\" should be more than %d item(s), but has %d", actual, length, l), msgAndArgs...)
+		return assert.Fail(t, fmt.Sprintf("%v length == %d, expect > %d", actual, l, length), msgAndArgs...)
 	}
 	return true
 }
@@ -101,14 +116,14 @@ func GreaterThanLength(t assert.TestingT, actual, expected interface{}, msgAndAr
 func GreaterOrEqualsLength(t assert.TestingT, actual, expected interface{}, msgAndArgs ...interface{}) bool {
 	length, err := convertInt(expected)
 	if err != nil {
-		return assert.Fail(t, fmt.Sprintf("expected type is not int, got %#v", expected), msgAndArgs...)
+		return assert.Fail(t, fmt.Sprintf("expect int type, got %#v", expected), msgAndArgs...)
 	}
 	ok, l := getLen(actual)
 	if !ok {
-		return assert.Fail(t, fmt.Sprintf("\"%s\" could not be applied builtin len()", actual), msgAndArgs...)
+		return assert.Fail(t, fmt.Sprintf("actual value %v(%T) can't get length", actual, actual), msgAndArgs...)
 	}
 	if l < length {
-		return assert.Fail(t, fmt.Sprintf("\"%s\" should be no less than %d item(s), but has %d", actual, length, l), msgAndArgs...)
+		return assert.Fail(t, fmt.Sprintf("%v length == %d, expect >= %d", actual, l, length), msgAndArgs...)
 	}
 	return true
 }
@@ -116,14 +131,14 @@ func GreaterOrEqualsLength(t assert.TestingT, actual, expected interface{}, msgA
 func LessThanLength(t assert.TestingT, actual, expected interface{}, msgAndArgs ...interface{}) bool {
 	length, err := convertInt(expected)
 	if err != nil {
-		return assert.Fail(t, fmt.Sprintf("expected type is not int, got %#v", expected), msgAndArgs...)
+		return assert.Fail(t, fmt.Sprintf("expect int type, got %#v", expected), msgAndArgs...)
 	}
 	ok, l := getLen(actual)
 	if !ok {
-		return assert.Fail(t, fmt.Sprintf("\"%s\" could not be applied builtin len()", actual), msgAndArgs...)
+		return assert.Fail(t, fmt.Sprintf("actual value %v(%T) can't get length", actual, actual), msgAndArgs...)
 	}
 	if l >= length {
-		return assert.Fail(t, fmt.Sprintf("\"%s\" should be less than %d item(s), but has %d", actual, length, l), msgAndArgs...)
+		return assert.Fail(t, fmt.Sprintf("%v length == %d, expect < %d", actual, l, length), msgAndArgs...)
 	}
 	return true
 }
@@ -131,14 +146,14 @@ func LessThanLength(t assert.TestingT, actual, expected interface{}, msgAndArgs 
 func LessOrEqualsLength(t assert.TestingT, actual, expected interface{}, msgAndArgs ...interface{}) bool {
 	length, err := convertInt(expected)
 	if err != nil {
-		return assert.Fail(t, fmt.Sprintf("expected type is not int, got %#v", expected), msgAndArgs...)
+		return assert.Fail(t, fmt.Sprintf("expect int type, got %#v", expected), msgAndArgs...)
 	}
 	ok, l := getLen(actual)
 	if !ok {
-		return assert.Fail(t, fmt.Sprintf("\"%s\" could not be applied builtin len()", actual), msgAndArgs...)
+		return assert.Fail(t, fmt.Sprintf("actual value %v(%T) can't get length", actual, actual), msgAndArgs...)
 	}
 	if l > length {
-		return assert.Fail(t, fmt.Sprintf("\"%s\" should be no more than %d item(s), but has %d", actual, length, l), msgAndArgs...)
+		return assert.Fail(t, fmt.Sprintf("%v length == %d, expect <= %d", actual, l, length), msgAndArgs...)
 	}
 	return true
 }
@@ -149,6 +164,12 @@ func ContainedBy(t assert.TestingT, actual, expected interface{}, msgAndArgs ...
 }
 
 func StringEqual(t assert.TestingT, actual, expected interface{}, msgAndArgs ...interface{}) bool {
+	a := fmt.Sprintf("%v", actual)
+	e := fmt.Sprintf("%v", expected)
+	return assert.True(t, a == e, msgAndArgs)
+}
+
+func EqualFold(t assert.TestingT, actual, expected interface{}, msgAndArgs ...interface{}) bool {
 	if !assert.IsType(t, "string", actual, msgAndArgs) {
 		return false
 	}

@@ -14,11 +14,22 @@ import (
 	"github.com/pkg/errors"
 	"github.com/rs/zerolog/log"
 
-	"github.com/httprunner/httprunner/hrp/internal/builtin"
-	"github.com/httprunner/httprunner/hrp/internal/json"
+	"github.com/httprunner/httprunner/v4/hrp/internal/builtin"
+	"github.com/httprunner/httprunner/v4/hrp/internal/json"
+	"github.com/httprunner/httprunner/v4/hrp/pkg/uixt"
 )
 
-func newResponseObject(t *testing.T, parser *Parser, resp *http.Response) (*responseObject, error) {
+var fieldTags = []string{"proto", "status_code", "headers", "cookies", "body", textExtractorSubRegexp}
+
+type httpRespObjMeta struct {
+	Proto      string            `json:"proto"`
+	StatusCode int               `json:"status_code"`
+	Headers    map[string]string `json:"headers"`
+	Cookies    map[string]string `json:"cookies"`
+	Body       interface{}       `json:"body"`
+}
+
+func newHttpResponseObject(t *testing.T, parser *Parser, resp *http.Response) (*responseObject, error) {
 	// prepare response headers
 	headers := make(map[string]string)
 	for k, v := range resp.Header {
@@ -46,38 +57,62 @@ func newResponseObject(t *testing.T, parser *Parser, resp *http.Response) (*resp
 		body = string(respBodyBytes)
 	}
 
-	respObjMeta := respObjMeta{
+	respObjMeta := httpRespObjMeta{
+		Proto:      resp.Proto,
 		StatusCode: resp.StatusCode,
 		Headers:    headers,
 		Cookies:    cookies,
 		Body:       body,
 	}
 
-	// convert respObjMeta to interface{}
+	return convertToResponseObject(t, parser, respObjMeta)
+}
+
+type wsCloseRespObject struct {
+	StatusCode int    `json:"status_code"`
+	Text       string `json:"body"`
+}
+
+func newWsCloseResponseObject(t *testing.T, parser *Parser, resp *wsCloseRespObject) (*responseObject, error) {
+	return convertToResponseObject(t, parser, resp)
+}
+
+type wsReadRespObject struct {
+	Message     interface{} `json:"body"`
+	messageType int
+}
+
+func newWsReadResponseObject(t *testing.T, parser *Parser, resp *wsReadRespObject) (*responseObject, error) {
+	byteMessage, ok := resp.Message.([]byte)
+	if !ok {
+		return nil, errors.New("websocket message type should be []byte")
+	}
+	var msg interface{}
+	if err := json.Unmarshal(byteMessage, &msg); err != nil {
+		// response body is not json, use raw body
+		msg = string(byteMessage)
+	}
+	resp.Message = msg
+	return convertToResponseObject(t, parser, resp)
+}
+
+func convertToResponseObject(t *testing.T, parser *Parser, respObjMeta interface{}) (*responseObject, error) {
 	respObjMetaBytes, _ := json.Marshal(respObjMeta)
 	var data interface{}
 	decoder := json.NewDecoder(bytes.NewReader(respObjMetaBytes))
 	decoder.UseNumber()
 	if err := decoder.Decode(&data); err != nil {
 		log.Error().
-			Str("respObjMeta", string(respObjMetaBytes)).
+			Str("respObjectMeta", string(respObjMetaBytes)).
 			Err(err).
-			Msg("[NewResponseObject] convert respObjMeta to interface{} failed")
+			Msg("[convertToResponseObject] convert respObjectMeta to interface{} failed")
 		return nil, err
 	}
-
 	return &responseObject{
 		t:           t,
 		parser:      parser,
 		respObjMeta: data,
 	}, nil
-}
-
-type respObjMeta struct {
-	StatusCode int               `json:"status_code"`
-	Headers    map[string]string `json:"headers"`
-	Cookies    map[string]string `json:"cookies"`
-	Body       interface{}       `json:"body"`
 }
 
 type responseObject struct {
@@ -89,24 +124,35 @@ type responseObject struct {
 
 const textExtractorSubRegexp string = `(.*)`
 
-func (v *responseObject) extractField(value string) interface{} {
-	var result interface{}
-	if strings.Contains(value, textExtractorSubRegexp) {
-		result = v.searchRegexp(value)
-	} else {
-		result = v.searchJmespath(value)
+func (v *responseObject) searchField(field string, variablesMapping map[string]interface{}) interface{} {
+	var result interface{} = field
+	if strings.Contains(field, "$") {
+		// parse reference variables in field before search
+		var err error
+		result, err = v.parser.Parse(field, variablesMapping)
+		if err != nil {
+			log.Error().Str("field name", field).Err(err).Msg("fail to parse field before search")
+		}
+	}
+	// search field using jmespath or regex if parsed field is still string and contains specified fieldTags
+	if parsedField, ok := result.(string); ok && checkSearchField(parsedField) {
+		if strings.Contains(field, textExtractorSubRegexp) {
+			result = v.searchRegexp(parsedField)
+		} else {
+			result = v.searchJmespath(parsedField)
+		}
 	}
 	return result
 }
 
-func (v *responseObject) Extract(extractors map[string]string) map[string]interface{} {
+func (v *responseObject) Extract(extractors map[string]string, variablesMapping map[string]interface{}) map[string]interface{} {
 	if extractors == nil {
 		return nil
 	}
 
 	extractMapping := make(map[string]interface{})
 	for key, value := range extractors {
-		extractedValue := v.extractField(value)
+		extractedValue := v.searchField(value, variablesMapping)
 		log.Info().Str("from", value).Interface("value", extractedValue).Msg("extract value")
 		log.Info().Str("variable", key).Interface("value", extractedValue).Msg("set variable")
 		extractMapping[key] = extractedValue
@@ -123,17 +169,7 @@ func (v *responseObject) Validate(iValidators []interface{}, variablesMapping ma
 		}
 		// parse check value
 		checkItem := validator.Check
-		var checkValue interface{}
-		if strings.Contains(checkItem, "$") {
-			// reference variable
-			checkValue, err = v.parser.Parse(checkItem, variablesMapping)
-			if err != nil {
-				return err
-			}
-		} else {
-			// regExp or jmesPath
-			checkValue = v.extractField(checkItem)
-		}
+		checkValue := v.searchField(checkItem, variablesMapping)
 
 		// get assert method
 		assertMethod := validator.Assert
@@ -168,21 +204,34 @@ func (v *responseObject) Validate(iValidators []interface{}, variablesMapping ma
 			Str("checkExpr", validator.Check).
 			Str("assertMethod", assertMethod).
 			Interface("expectValue", expectValue).
+			Str("expectValueType", builtin.InterfaceType(expectValue)).
 			Interface("checkValue", checkValue).
+			Str("checkValueType", builtin.InterfaceType(checkValue)).
 			Bool("result", result).
 			Msgf("validate %s", checkItem)
 		if !result {
 			v.t.Fail()
-			return errors.New(fmt.Sprintf(
-				"do assertion failed, checkExpr: %v, assertMethod: %v, checkValue: %v, expectValue: %v",
-				validator.Check,
-				assertMethod,
-				checkValue,
-				expectValue,
-			))
+			log.Error().
+				Str("checkExpr", validator.Check).
+				Str("assertMethod", assertMethod).
+				Interface("checkValue", checkValue).
+				Str("checkValueType", builtin.InterfaceType(checkValue)).
+				Interface("expectValue", expectValue).
+				Str("expectValueType", builtin.InterfaceType(expectValue)).
+				Msg("assert failed")
+			return errors.New("step validation failed")
 		}
 	}
 	return nil
+}
+
+func checkSearchField(expr string) bool {
+	for _, t := range fieldTags {
+		if strings.Contains(expr, t) {
+			return true
+		}
+	}
+	return false
 }
 
 func (v *responseObject) searchJmespath(expr string) interface{} {
@@ -218,9 +267,44 @@ func (v *responseObject) searchRegexp(expr string) interface{} {
 		return expr
 	}
 	match := regexpCompile.FindStringSubmatch(bodyStr)
-	if match != nil || len(match) > 1 {
-		return match[1] //return first matched result in parentheses
+	if len(match) > 1 {
+		return match[1] // return first matched result in parentheses
 	}
 	log.Error().Str("expr", expr).Msg("search regexp failed")
 	return expr
+}
+
+func validateUI(ud *uixt.DriverExt, iValidators []interface{}) (validateResults []*ValidationResult, err error) {
+	for _, iValidator := range iValidators {
+		validator, ok := iValidator.(Validator)
+		if !ok {
+			return nil, errors.New("validator type error")
+		}
+
+		validataResult := &ValidationResult{
+			Validator:   validator,
+			CheckResult: "fail",
+		}
+
+		// parse check value
+		if !strings.HasPrefix(validator.Check, "ui_") {
+			validataResult.CheckResult = "skip"
+			log.Warn().Interface("validator", validator).Msg("skip validator")
+			validateResults = append(validateResults, validataResult)
+			continue
+		}
+
+		expected, ok := validator.Expect.(string)
+		if !ok {
+			return nil, errors.New("validator expect should be string")
+		}
+
+		if !ud.DoValidation(validator.Check, validator.Assert, expected, validator.Message) {
+			return validateResults, errors.New("step validation failed")
+		}
+
+		validataResult.CheckResult = "pass"
+		validateResults = append(validateResults, validataResult)
+	}
+	return validateResults, nil
 }

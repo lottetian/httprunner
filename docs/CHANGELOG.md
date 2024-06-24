@@ -1,24 +1,335 @@
 # Release History
 
-## v4.0.0-alpha
+## v4.3.8 (2024-01-18)
+
+- feat: add Shell step type
+
+## v4.3.7 (2023-09-19)
+
+**go version**
+
+- feat: add `WithSwipeOffset` to set offset for swipe start/end point
+- feat: set random offset for tap/swipe points with `WithOffsetRandomRange`
+- change: set `WithOffset` deprecated, replace with `WithTapOffset`
+
+## v4.3.6 (2023-09-07)
+
+**go version**
+
+plugin related:
+
+- feat: add hrp executable directory for searching plugin
+- feat: init device driver with plugin options, `WithDriverCapabilities` and `WithDriverPlugin`
+- feat: support printing stderr output in myexec.RunCommand
+- change: upgrade funplugin to 0.5.3
+- refactor: move internal myexec to funplugin/myexec
+- change: create python3 plugin venv with latest funppy/httprunner
+
+UI related:
+
+- feat: get current feed info from app event trackings
+- feat: log feed screenshot take/cv elapsed time
+- feat: support to reset driver (or session only) automatically when UIA2 / WDA crashed or WebDriver request failed
+- feat: `tap_cv` action supports ui type detection and tap
+- feat: support action options for `ScreenShot`, `WithScreenShotOCR`/`WithScreenShotUpload`/`WithScreenShotLiveType`/`WithScreenShotUIType`
+- fix: add compatible support for indicating options separately at the `MobileAction` level
+- fix: use Override size if existed, otherwise use Physical size (android devices)
+- fix: add default options for `swipe_to_tap_app` action
+- refactor: ui validation methods, support parsing expect value
+- fix: reuse the same request body during `GetImage` retry
+- fix: iOS `tap_xy` scale adaption error
+- feat: support new action: `close_popups`
+- fix: swipeToTapTexts with identifiers/regex
+
+others:
+
+- change: log elapsed duration in milliseconds
+- change: set log timestamp precise to milliseconds
+
+## v4.3.5 (2023-07-23)
+
+- refactor: send events to Google Analytics 4, replace GA v1
+- fix: failure unittests caused by httpbin.org, replace with docker service
+- fix: handle unstable unittests, restore github actions pipeline
+
+**go version**
+
+- feat: report GA4 events for hrp cmd
+- change: create python venv with httprunner minimum version v4.3.5
+- fix #1603: ensure path suffix '/' exists
+
+**python version**
+
+- fix: upgrade pyyaml from 5.4.1 to 6.0.1, fix installing error
+- refactor: update httprunner dependencies
+
+## v4.3.4 (2023-06-01)
+
+**go version**
+
+- feat: add video crawler for feed and live
+- feat: cache screenshot ocr texts
+- feat: set testcase and request timeout in seconds
+- feat: catch interrupt signal
+- feat: add new exit code MobileUILaunchAppError/InterruptError/TimeoutError/MobileUIActivityNotMatchError/MobileUIPopupError/LoopActionNotFoundError
+- feat: find text with regex
+- feat: add UI ocr tags to summary
+- feat: check android device offline when running shell failed
+- feat: print hrp runner exit code when running finished
+- feat: add screen resolution and step start time in summary
+- refactor: replace OCR APIs with image APIs
+- refactor: FindText(s) returns OCRText(s)
+- refactor: merge ActionOption with DataOption
+- change: exit with AndroidShellExecError code for adb shell failure
+- change: request vedem ocr with uploading image
+- change: remove ping/dns sub commands
+
+## v4.3.3 (2023-04-19)
+
+**go version**
+
+- feat: add `sleep_random` to sleep random seconds, with weight for multiple time ranges
+- feat: input text with adb
+- feat: add adb `screencap` sub command
+- feat: add `AssertAppInForeground` to check if the given package is in foreground
+- feat: check if app is in foreground when step failed
+- feat: add validator AssertAppInForeground and AssertAppNotInForeground
+- feat: save screenshots of all steps including ocr and cv recognition process data
+- fix: adb driver for TapFloat
+- fix: stop logcat only when enabled
+- fix: do not fail case when kill logcat error
+- fix: take screenshot after each step
+- fix: screencap compatibility for shell v1 and v2 protocol
+- fix: display parsed url in html report
+- fix: fast fail not closing the websocket connection
+- fix #1467: failed to parse parameters with plugin functions
+- fix #1549: avoid duplicate creating plugins
+- fix #1547: generate html report failed for referenced testcases
+- fix: setup hooks compatible with v3
+
+## v4.3.2 (2022-12-26)
+
+**go version**
+
+- feat: run Android UI automation with adb by default, add `uixt.WithUIA2(true)` option to use uiautomator2
+- refactor: remove unused APIs in UI automation
+- refactor: convert cases by specifying from/to format
+- change: remove traceroute/curl sub commands
+
+## v4.3.1 (2022-12-22)
+
+**go version**
+
+- feat: add option WithScreenShot
+- feat: run xctest before start ios automation
+- feat: run step with specified loop times
+- feat: add options for FindTexts
+- feat: capture pcap file for iOS, including CLI `hrp ios pcap` and option `uixt.WithIOSPcapOptions(...)`
+- feat: add performance monitor for iOS, including CLI `hrp ios perf` and options `uixt.WithIOSPerfOptions(...)`
+- refactor: move all UI APIs to uixt pkg
+- docs: add examples for UI APIs
+
+## v4.3.0 (2022-10-27)
+
+Release hrp sub package `uixt` to support iOS/Android UI automation testing 🎉
+
+- feat: support iOS UI automation with [WebDriverAgent] and [gwda]
+- feat: support Android UI automation with [uiautomator2] and [guia2]
+- feat: support UI recognition with [OCR service] and [gwda-ext-opencv]
+
+For iOS/Android device management:
+
+- feat: integrage ios device management with [gidevice]
+- feat: integrage android device management with [gadb]
+- feat: add simple commands to interact with iOS/Android devices, try `hrp ios` and `hrp adb`
+
+Other improvements:
+
+- feat: exit with specified code for different exceptions
+- refactor: make uixt/gadb/gidevice/boomer/httpstat as hrp sub package
+
+## v4.2.1 (2022-09-01)
+
+**go version**
+
+- fix: hrp boom duration still limited without specifying `--run-time`
+
+## v4.2.0 (2022-08-21)
+
+**go version**
+
+- feat: support distributed load testing on multi-machines
+- feat: support run/boom/convert curl command(s)
+- feat: add ping/dns/traceroute/curl sub commands
+- feat: improve builtin uploading feature, support `@` indicator and inferring MIME type
+- feat: hrp boom support setting duration of run time
+- change: support omitting websocket url if not necessary
+- change: support multiple websocket connections for each session
+- fix: optimize websocket step initialization
+- fix: reuse plugin instance if already initialized
+- fix: deep copy api step to avoid data racing
+
+## v4.1.6 (2022-07-04)
+
+**go version**
+
+- fix: support parameterize for step name
+- fix: concurrent map writes error when uploading in boom mode
+- fix: record all requests of referenced testcases in boom mode
+- fix: failed to record the step error in html report
+
+## v4.1.5 (2022-06-27)
+
+**go version**
+
+- feat: support setting global testcase timeout and step timeout
+- feat: support uploading file by multipart/form-data
+- change: set http request timeout default to 120s
+- fix: insert response cookies into request for redirect requests
+- fix: support log debug level for load testing
+- fix: failed to load json/data content in api reference
+- fix: failed to convert postman collection containing multipart/form-data requests to pytest
+- fix: only get the first parameter in referenced testcase
+- fix: support variable reference during extraction
+- fix: simplify jmespath compatibility conversion
+- refactor: simplify testcase converter
+
+**python version**
+
+- fix: failed to parse variable referenced in upload
+- refactor: make pytest testcases
+
+## v4.1.4 (2022-06-17)
+
+**go version**
+
+- feat: config pypi index url by setting environment `PYPI_INDEX_URL`
+- fix: filter commented out functions when generating plugin file
+- fix: failed to use parameters in referenced testcase
+- fix: failed to run testcase if python3 is not available on windows
+- fix: panic occurred when running API step failed
+- fix: step name overrides referenced testcase name
+
+**python version**
+
+- feat: support skip for pytest
+- feat: print request and response details in DEBUG level when running API cases
+- fix: support None/dict/list format when printing sql response
+- fix: omit pseudo header names for HTTP/1, e.g. :authority, :method, :path, :schema
+
+## v4.1.3 (2022-06-14)
+
+**go version**
+
+- feat #1342: support specify custom python3 venv, priority is greater than $HOME/.hrp/venv
+- feat: assert python3 package installed and version matched
+- refactor: build plugin mechanism, cancel automatic installation of dependencies
+- fix #1352: avoid conversion to exponential notation
+
+**python version**
+
+- fix: unexpected changes in step variables
+
+## v4.1.2 (2022-06-09)
+
+- feat: add Dockerfile
+- fix #1336: extract package in Windows
+- fix: install package on MinGW64 and Windows
+
+**go version**
+
+- fix #1331: use `str_eq` to assert string and digit equality
+- fix: load overall `pick_order` strategy in parameters_setting
+- fix: ensure all dependencies in debugtalk.py are installed
+- fix: select parameters with `random` strategy
+- change: remove `hrp har2case`, replace with `hrp convert`
+
+**python version**
+
+- feat #1316: add running log and request & response details in allure report
+
+## v4.1.1 (2022-05-31)
+
+- fix: failed to build debugtalk.go without go.mod
+- fix: avoid to escape from html special characters like '&' in converted JSON testcase
+- fix: display the full step name when referencing testcase in html report
+- fix: failed to regenerate debugtalk_gen.go and .debugtalk_gen.py correctly
+
+## v4.1.0 (2022-05-29)
+
+- feat: add `wiki` sub-command to open httprunner website
+- feat: add `build` sub-command for function plugin
+
+**go version**
+
+- feat #1268: convert postman collection to HttpRunner testcase
+- feat #1291: run testcases in v2/v3 JSON/YAML format with hrp run/boom command
+- feat #1280: support creating empty scaffold project
+- fix #1308: load `.env` file as environment variables
+- fix #1309: locate plugin file upward recursively until system root dir
+- fix #1315: failed to generate a report in failfast mode
+- refactor: move base_url to config `environs`
+- refactor: implement testcase conversions with `hrp convert`
+
+## v4.1.0-beta (2022-05-21)
+
+- feat: add pre-commit-hook to format go/python code
+
+**go version**
+
+- feat: add boomer mode(standalone/master/worker)
+- feat: support load testing with specified `--profile` configuration file
+- fix: step request elapsed timing should contain ContentTransfer part
+- fix #1288: unable to go get httprunner v4
+- fix: panic when config didn't exist in testcase file
+- fix: disable keep alive and improve RPS accuracy
+- fix: improve RPS accuracy
+
+**python version**
+
+- feat: support new step type with SQL operation
+- feat: support new step type with thrift protocol
+
+## v4.0.0 (2022-05-05)
+
+**go version**
+
+- feat: stat HTTP request latencies (DNSLookup, TCP Connection and so on)
+- feat: add builtin function `environ`/`ENV`
+- fix: demo function compatibility
+- fix #1240: losing host port in har2case
+- fix: concurrent map write in parameterize
+- change: get hrp version from aliyun OSS file when installing
+- change: report more load testing metrics to prometheus
+
+## v4.0.0-beta (2022-04-24)
 
 - refactor: merge [hrp] into httprunner v4, which will include golang and python dual engine
+- refactor: redesign `IStep` to make step extensible to support implementing new protocols and test types
+- feat: disable GA events report by setting environment `DISABLE_GA=true`
+- feat: disable sentry reports by setting environment `DISABLE_SENTRY=true`
+- feat: prepare python3 venv in `~/.hrp/venv` before running
 
 **go version**
 
 - feat: add `--profile` flag for har2case to support overwrite headers/cookies with specified yaml/json profile file
 - feat: support run testcases in specified folder path, including testcases in sub folders
+- feat: support HTTP/2 protocol
+- feat: support WebSocket protocol
+- feat: convert YAML/JSON testcases to pytest scripts with `hrp convert`
 - change: integrate [sentry sdk][sentry sdk] for panic reporting and analysis
 - change: lock funplugin version when creating scaffold project
 - fix: call referenced api/testcase with relative path
-- refactor: redesign `IStep` to make step extensible to support implementing new protocols and test types
 
 **python version**
 
+- feat: support retry when test step failed
+- feat: add `pytest` sub-command to run pytest scripts
 - change: remove startproject, move all features to go version, replace with `hrp startproject`
 - change: remove har2case, move all features to go version, replace with `hrp run`
 - change: remove locust, you should run load tests with go version, replace with `hrp boom`
 - change: remove fastapi and uvicorn dependencies
+- change: add pytest.ini to make log colorful
 - fix: ignore exceptions when reporting GA events
 - fix: remove misuse of NoReturn in Python typing
 
@@ -156,6 +467,23 @@
 - test: add CI test with [github actions][github-actions]
 - test: integrate [sentry sdk][sentry sdk] for event reporting and analysis
 
+## 3.1.11 (2022-04-24)
+
+- fix #1273: ImportError by cannot import name '_unicodefun' from 'click'
+
+## 3.1.10 (2022-04-18)
+
+- fix #1249: catch exceptions when requesting with disabling allow_redirects
+- fix: catch OSError when running subprocess
+
+## 3.1.9 (2022-04-17)
+
+- fix #1174: pydantic validation error when body is None
+- fix #1209: only convert jmespath path for some fields in white list
+- fix #1233: parse upload info with session variables
+- fix #1246: catch exceptions caused by GA report failure
+- fix #1247: catch exceptions when getting socket address failed
+
 ## 3.1.8 (2022-03-22)
 
 - feat: add `--profile` flag for har2case to support overwrite headers/cookies with specified yaml/json configuration file
@@ -290,9 +618,9 @@
 **Changed**
 
 - change: override variables
-    (1) testcase: session variables > step variables > config variables
-    (2) testsuite: testcase variables > config variables
-    (3) testsuite testcase variables > testcase config variables
+  (1) testcase: session variables > step variables > config variables
+  (2) testsuite: testcase variables > config variables
+  (3) testsuite testcase variables > testcase config variables
 
 **Fixed**
 
@@ -490,3 +818,11 @@ reference: [v2-changelog]
 [black]: https://github.com/psf/black
 [loguru]: https://github.com/Delgan/loguru
 [v2-changelog]: https://github.com/httprunner/httprunner/blob/v2/docs/CHANGELOG.md
+[WebDriverAgent]: https://github.com/appium/WebDriverAgent
+[uiautomator2]: https://github.com/appium/appium-uiautomator2-server
+[gidevice]: https://github.com/electricbubble/gidevice
+[gwda]: https://github.com/electricbubble/gwda
+[guia2]: https://github.com/electricbubble/guia2
+[gadb]: https://github.com/electricbubble/gadb
+[OCR service]: https://www.volcengine.com/product/text-recognition
+[gwda-ext-opencv]: https://github.com/electricbubble/gwda-ext-opencv

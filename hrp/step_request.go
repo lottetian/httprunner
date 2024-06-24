@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"compress/zlib"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"net/http"
@@ -15,11 +16,14 @@ import (
 	"time"
 
 	"github.com/andybalholm/brotli"
+	"github.com/fatih/color"
 	"github.com/pkg/errors"
 	"github.com/rs/zerolog/log"
 
-	"github.com/httprunner/httprunner/hrp/internal/builtin"
-	"github.com/httprunner/httprunner/hrp/internal/json"
+	"github.com/httprunner/httprunner/v4/hrp/internal/builtin"
+	"github.com/httprunner/httprunner/v4/hrp/internal/code"
+	"github.com/httprunner/httprunner/v4/hrp/internal/json"
+	"github.com/httprunner/httprunner/v4/hrp/pkg/httpstat"
 )
 
 type HTTPMethod string
@@ -39,15 +43,17 @@ const (
 type Request struct {
 	Method         HTTPMethod             `json:"method" yaml:"method"` // required
 	URL            string                 `json:"url" yaml:"url"`       // required
+	HTTP2          bool                   `json:"http2,omitempty" yaml:"http2,omitempty"`
 	Params         map[string]interface{} `json:"params,omitempty" yaml:"params,omitempty"`
 	Headers        map[string]string      `json:"headers,omitempty" yaml:"headers,omitempty"`
 	Cookies        map[string]string      `json:"cookies,omitempty" yaml:"cookies,omitempty"`
 	Body           interface{}            `json:"body,omitempty" yaml:"body,omitempty"`
 	Json           interface{}            `json:"json,omitempty" yaml:"json,omitempty"`
 	Data           interface{}            `json:"data,omitempty" yaml:"data,omitempty"`
-	Timeout        float32                `json:"timeout,omitempty" yaml:"timeout,omitempty"`
+	Timeout        float64                `json:"timeout,omitempty" yaml:"timeout,omitempty"` // timeout in seconds
 	AllowRedirects bool                   `json:"allow_redirects,omitempty" yaml:"allow_redirects,omitempty"`
 	Verify         bool                   `json:"verify,omitempty" yaml:"verify,omitempty"`
+	Upload         map[string]interface{} `json:"upload,omitempty" yaml:"upload,omitempty"`
 }
 
 func newRequestBuilder(parser *Parser, config *TConfig, stepRequest *Request) *requestBuilder {
@@ -56,17 +62,23 @@ func newRequestBuilder(parser *Parser, config *TConfig, stepRequest *Request) *r
 	var requestMap map[string]interface{}
 	_ = json.Unmarshal(jsonRequest, &requestMap)
 
+	request := &http.Request{
+		Header: make(http.Header),
+	}
+	if stepRequest.HTTP2 {
+		request.ProtoMajor = 2
+		request.ProtoMinor = 0
+	} else {
+		request.ProtoMajor = 1
+		request.ProtoMinor = 1
+	}
+
 	return &requestBuilder{
 		stepRequest: stepRequest,
-		req: &http.Request{
-			Header:     make(http.Header),
-			Proto:      "HTTP/1.1",
-			ProtoMajor: 1,
-			ProtoMinor: 1,
-		},
-		config:     config,
-		parser:     parser,
-		requestMap: requestMap,
+		req:         request,
+		config:      config,
+		parser:      parser,
+		requestMap:  requestMap,
 	}
 }
 
@@ -115,7 +127,7 @@ func (r *requestBuilder) prepareHeaders(stepVariables map[string]interface{}) er
 		}
 		r.req.AddCookie(&http.Cookie{
 			Name:  cookieName,
-			Value: fmt.Sprintf("%v", value),
+			Value: convertString(value),
 		})
 	}
 
@@ -135,7 +147,10 @@ func (r *requestBuilder) prepareUrlParams(stepVariables map[string]interface{}) 
 		log.Error().Err(err).Msg("parse request url failed")
 		return err
 	}
-	rawUrl := buildURL(r.config.BaseURL, convertString(requestUrl))
+	var baseURL string
+	if stepVariables["base_url"] != nil {
+		baseURL, _ = stepVariables["base_url"].(string)
+	}
 
 	// prepare request params
 	var queryParams url.Values
@@ -145,32 +160,24 @@ func (r *requestBuilder) prepareUrlParams(stepVariables map[string]interface{}) 
 			return errors.Wrap(err, "parse request params failed")
 		}
 		parsedParams := params.(map[string]interface{})
-		r.requestMap["params"] = parsedParams
 		if len(parsedParams) > 0 {
 			queryParams = make(url.Values)
 			for k, v := range parsedParams {
-				queryParams.Add(k, fmt.Sprint(v))
+				queryParams.Add(k, convertString(v))
 			}
 		}
-	}
-	if queryParams != nil {
-		// append params to url
-		paramStr := queryParams.Encode()
-		if strings.IndexByte(rawUrl, '?') == -1 {
-			rawUrl = rawUrl + "?" + paramStr
-		} else {
-			rawUrl = rawUrl + "&" + paramStr
-		}
+
+		// request params has been appended to url, thus delete it here
+		delete(r.requestMap, "params")
 	}
 
 	// prepare url
-	u, err := url.Parse(rawUrl)
-	if err != nil {
-		return errors.Wrap(err, "parse url failed")
-	}
-	r.req.URL = u
-	r.req.Host = u.Host
+	preparedURL := buildURL(baseURL, convertString(requestUrl), queryParams)
+	r.req.URL = preparedURL
+	r.req.Host = preparedURL.Host
 
+	// update url
+	r.requestMap["url"] = preparedURL.String()
 	return nil
 }
 
@@ -203,7 +210,7 @@ func (r *requestBuilder) prepareBody(stepVariables map[string]interface{}) error
 			// post form data
 			formData := make(url.Values)
 			for k, v := range vv {
-				formData.Add(k, fmt.Sprint(v))
+				formData.Add(k, convertString(v))
 			}
 			dataBytes = []byte(formData.Encode())
 		} else {
@@ -232,6 +239,8 @@ func (r *requestBuilder) prepareBody(stepVariables map[string]interface{}) error
 		dataBytes = vv
 	case bytes.Buffer:
 		dataBytes = vv.Bytes()
+	case *builtin.TFormDataWriter:
+		dataBytes = vv.Payload.Bytes()
 	default: // unexpected body type
 		return errors.New("unexpected request body type")
 	}
@@ -242,9 +251,32 @@ func (r *requestBuilder) prepareBody(stepVariables map[string]interface{}) error
 	return nil
 }
 
-func runStepRequest(r *SessionRunner, step *TStep) (stepResult *StepResult, err error) {
-	log.Info().Str("step", step.Name).Msg("run step start")
+func initUpload(step *TStep) {
+	if step.Request.Headers == nil {
+		step.Request.Headers = make(map[string]string)
+	}
+	step.Request.Headers["Content-Type"] = "${multipart_content_type($m_encoder)}"
+	step.Request.Body = "$m_encoder"
+}
 
+func prepareUpload(parser *Parser, step *TStep, stepVariables map[string]interface{}) (err error) {
+	if len(step.Request.Upload) == 0 {
+		return
+	}
+	uploadMap, err := parser.Parse(step.Request.Upload, stepVariables)
+	if err != nil {
+		return
+	}
+	stepVariables["m_upload"] = uploadMap
+	mEncoder, err := parser.Parse("${multipart_encoder($m_upload)}", stepVariables)
+	if err != nil {
+		return
+	}
+	stepVariables["m_encoder"] = mEncoder
+	return
+}
+
+func runStepRequest(r *SessionRunner, step *TStep) (stepResult *StepResult, err error) {
 	stepResult = &StepResult{
 		Name:        step.Name,
 		StepType:    stepTypeRequest,
@@ -252,35 +284,31 @@ func runStepRequest(r *SessionRunner, step *TStep) (stepResult *StepResult, err 
 		ContentSize: 0,
 	}
 
+	// merge step variables with session variables
+	stepVariables, err := r.ParseStepVariables(step.Variables)
+	if err != nil {
+		err = errors.Wrap(err, "parse step variables failed")
+		return
+	}
+
 	defer func() {
 		// update testcase summary
 		if err != nil {
-			log.Error().Err(err).Msg("run request step failed")
-			stepResult.Attachment = err.Error()
-		} else {
-			// update extracted variables
-			r.UpdateSession(stepResult.ExportVars)
-			log.Info().
-				Str("step", step.Name).
-				Bool("success", stepResult.Success).
-				Interface("exportVars", stepResult.ExportVars).
-				Msg("run step end")
+			stepResult.Attachments = err.Error()
 		}
-		r.UpdateSummary(stepResult)
 	}()
 
-	sessionData := newSessionData()
-	parser := r.GetParser()
-	config := r.GetConfig()
-
-	rb := newRequestBuilder(parser, config, step.Request)
-	rb.req.Method = string(step.Request.Method)
-
-	// override step variables
-	stepVariables, err := r.MergeStepVariables(step.Variables)
+	err = prepareUpload(r.caseRunner.parser, step, stepVariables)
 	if err != nil {
 		return
 	}
+
+	sessionData := newSessionData()
+	parser := r.caseRunner.parser
+	config := r.caseRunner.parsedConfig
+
+	rb := newRequestBuilder(parser, config, step.Request)
+	rb.req.Method = strings.ToUpper(string(step.Request.Method))
 
 	err = rb.prepareUrlParams(stepVariables)
 	if err != nil {
@@ -300,57 +328,89 @@ func runStepRequest(r *SessionRunner, step *TStep) (stepResult *StepResult, err 
 	// add request object to step variables, could be used in setup hooks
 	stepVariables["hrp_step_name"] = step.Name
 	stepVariables["hrp_step_request"] = rb.requestMap
+	stepVariables["request"] = rb.requestMap // setup hooks compatible with v3
 
 	// deal with setup hooks
 	for _, setupHook := range step.SetupHooks {
-		_, err = parser.Parse(setupHook, stepVariables)
+		_, err := parser.Parse(setupHook, stepVariables)
 		if err != nil {
 			return stepResult, errors.Wrap(err, "run setup hooks failed")
 		}
 	}
 
 	// log & print request
-	if r.LogOn() {
+	if r.caseRunner.hrpRunner.requestsLogOn {
 		if err := printRequest(rb.req); err != nil {
 			return stepResult, err
 		}
 	}
 
+	// stat HTTP request
+	var httpStat httpstat.Stat
+	if r.caseRunner.hrpRunner.httpStatOn {
+		ctx := httpstat.WithHTTPStat(rb.req, &httpStat)
+		rb.req = rb.req.WithContext(ctx)
+	}
+
+	// select HTTP client
+	var client *http.Client
+	if step.Request.HTTP2 {
+		client = r.caseRunner.hrpRunner.http2Client
+	} else {
+		client = r.caseRunner.hrpRunner.httpClient
+	}
+
+	// set step timeout
+	if step.Request.Timeout != 0 {
+		client.Timeout = time.Duration(step.Request.Timeout*1000) * time.Millisecond
+	}
+
 	// do request action
 	start := time.Now()
-	resp, err := r.hrpRunner.client.Do(rb.req)
-	stepResult.Elapsed = time.Since(start).Milliseconds()
+	resp, err := client.Do(rb.req)
 	if err != nil {
 		return stepResult, errors.Wrap(err, "do request failed")
 	}
-	defer resp.Body.Close()
+	if resp != nil {
+		defer resp.Body.Close()
+	}
 
 	// decode response body in br/gzip/deflate formats
 	err = decodeResponseBody(resp)
 	if err != nil {
 		return stepResult, errors.Wrap(err, "decode response body failed")
 	}
+	defer resp.Body.Close()
 
 	// log & print response
-	if r.LogOn() {
+	if r.caseRunner.hrpRunner.requestsLogOn {
 		if err := printResponse(resp); err != nil {
 			return stepResult, err
 		}
 	}
 
 	// new response object
-	respObj, err := newResponseObject(r.hrpRunner.t, parser, resp)
+	respObj, err := newHttpResponseObject(r.caseRunner.hrpRunner.t, parser, resp)
 	if err != nil {
 		err = errors.Wrap(err, "init ResponseObject error")
 		return
 	}
 
+	stepResult.Elapsed = time.Since(start).Milliseconds()
+	if r.caseRunner.hrpRunner.httpStatOn {
+		// resp.Body has been ReadAll
+		httpStat.Finish()
+		stepResult.HttpStat = httpStat.Durations()
+		httpStat.Print()
+	}
+
 	// add response object to step variables, could be used in teardown hooks
 	stepVariables["hrp_step_response"] = respObj.respObjMeta
+	stepVariables["response"] = respObj.respObjMeta
 
 	// deal with teardown hooks
 	for _, teardownHook := range step.TeardownHooks {
-		_, err = parser.Parse(teardownHook, stepVariables)
+		_, err := parser.Parse(teardownHook, stepVariables)
 		if err != nil {
 			return stepResult, errors.Wrap(err, "run teardown hooks failed")
 		}
@@ -361,7 +421,7 @@ func runStepRequest(r *SessionRunner, step *TStep) (stepResult *StepResult, err 
 
 	// extract variables from response
 	extractors := step.Extract
-	extractMapping := respObj.Extract(extractors)
+	extractMapping := respObj.Extract(extractors, stepVariables)
 	stepResult.ExportVars = extractMapping
 
 	// override step variables with extracted variables
@@ -389,15 +449,29 @@ func printRequest(req *http.Request) error {
 	}
 	fmt.Println("-------------------- request --------------------")
 	reqContent := string(reqDump)
-	if req.Body != nil && !printBody {
+	if reqContentType != "" && !printBody {
 		reqContent += fmt.Sprintf("(request body omitted for Content-Type: %v)", reqContentType)
 	}
 	fmt.Println(reqContent)
 	return nil
 }
 
+func printf(format string, a ...interface{}) (n int, err error) {
+	return fmt.Fprintf(color.Output, format, a...)
+}
+
 func printResponse(resp *http.Response) error {
-	fmt.Println("==================== response ===================")
+	fmt.Println("==================== response ====================")
+	connectedVia := "plaintext"
+	if resp.TLS != nil {
+		switch resp.TLS.Version {
+		case tls.VersionTLS12:
+			connectedVia = "TLSv1.2"
+		case tls.VersionTLS13:
+			connectedVia = "TLSv1.3"
+		}
+	}
+	printf("%s %s\n", color.CyanString("Connected via"), color.BlueString("%s", connectedVia))
 	respContentType := resp.Header.Get("Content-Type")
 	printBody := shouldPrintBody(respContentType)
 	respDump, err := httputil.DumpResponse(resp, printBody)
@@ -405,7 +479,7 @@ func printResponse(resp *http.Response) error {
 		return errors.Wrap(err, "dump response failed")
 	}
 	respContent := string(respDump)
-	if !printBody {
+	if respContentType != "" && !printBody {
 		respContent += fmt.Sprintf("(response body omitted for Content-Type: %v)", respContentType)
 	}
 	fmt.Println(respContent)
@@ -477,11 +551,30 @@ func (s *StepRequest) SetupHook(hook string) *StepRequest {
 	return s
 }
 
+// HTTP2 enables HTTP/2 protocol
+func (s *StepRequest) HTTP2() *StepRequest {
+	s.step.Request = &Request{
+		HTTP2: true,
+	}
+	return s
+}
+
+// Loop specify running times for the current step
+func (s *StepRequest) Loop(times int) *StepRequest {
+	s.step.Loops = times
+	return s
+}
+
 // GET makes a HTTP GET request.
 func (s *StepRequest) GET(url string) *StepRequestWithOptionalArgs {
-	s.step.Request = &Request{
-		Method: httpGET,
-		URL:    url,
+	if s.step.Request != nil {
+		s.step.Request.Method = httpGET
+		s.step.Request.URL = url
+	} else {
+		s.step.Request = &Request{
+			Method: httpGET,
+			URL:    url,
+		}
 	}
 	return &StepRequestWithOptionalArgs{
 		step: s.step,
@@ -490,9 +583,14 @@ func (s *StepRequest) GET(url string) *StepRequestWithOptionalArgs {
 
 // HEAD makes a HTTP HEAD request.
 func (s *StepRequest) HEAD(url string) *StepRequestWithOptionalArgs {
-	s.step.Request = &Request{
-		Method: httpHEAD,
-		URL:    url,
+	if s.step.Request != nil {
+		s.step.Request.Method = httpHEAD
+		s.step.Request.URL = url
+	} else {
+		s.step.Request = &Request{
+			Method: httpHEAD,
+			URL:    url,
+		}
 	}
 	return &StepRequestWithOptionalArgs{
 		step: s.step,
@@ -501,9 +599,14 @@ func (s *StepRequest) HEAD(url string) *StepRequestWithOptionalArgs {
 
 // POST makes a HTTP POST request.
 func (s *StepRequest) POST(url string) *StepRequestWithOptionalArgs {
-	s.step.Request = &Request{
-		Method: httpPOST,
-		URL:    url,
+	if s.step.Request != nil {
+		s.step.Request.Method = httpPOST
+		s.step.Request.URL = url
+	} else {
+		s.step.Request = &Request{
+			Method: httpPOST,
+			URL:    url,
+		}
 	}
 	return &StepRequestWithOptionalArgs{
 		step: s.step,
@@ -512,9 +615,14 @@ func (s *StepRequest) POST(url string) *StepRequestWithOptionalArgs {
 
 // PUT makes a HTTP PUT request.
 func (s *StepRequest) PUT(url string) *StepRequestWithOptionalArgs {
-	s.step.Request = &Request{
-		Method: httpPUT,
-		URL:    url,
+	if s.step.Request != nil {
+		s.step.Request.Method = httpPUT
+		s.step.Request.URL = url
+	} else {
+		s.step.Request = &Request{
+			Method: httpPUT,
+			URL:    url,
+		}
 	}
 	return &StepRequestWithOptionalArgs{
 		step: s.step,
@@ -523,9 +631,14 @@ func (s *StepRequest) PUT(url string) *StepRequestWithOptionalArgs {
 
 // DELETE makes a HTTP DELETE request.
 func (s *StepRequest) DELETE(url string) *StepRequestWithOptionalArgs {
-	s.step.Request = &Request{
-		Method: httpDELETE,
-		URL:    url,
+	if s.step.Request != nil {
+		s.step.Request.Method = httpDELETE
+		s.step.Request.URL = url
+	} else {
+		s.step.Request = &Request{
+			Method: httpDELETE,
+			URL:    url,
+		}
 	}
 	return &StepRequestWithOptionalArgs{
 		step: s.step,
@@ -534,9 +647,14 @@ func (s *StepRequest) DELETE(url string) *StepRequestWithOptionalArgs {
 
 // OPTIONS makes a HTTP OPTIONS request.
 func (s *StepRequest) OPTIONS(url string) *StepRequestWithOptionalArgs {
-	s.step.Request = &Request{
-		Method: httpOPTIONS,
-		URL:    url,
+	if s.step.Request != nil {
+		s.step.Request.Method = httpOPTIONS
+		s.step.Request.URL = url
+	} else {
+		s.step.Request = &Request{
+			Method: httpOPTIONS,
+			URL:    url,
+		}
 	}
 	return &StepRequestWithOptionalArgs{
 		step: s.step,
@@ -545,9 +663,14 @@ func (s *StepRequest) OPTIONS(url string) *StepRequestWithOptionalArgs {
 
 // PATCH makes a HTTP PATCH request.
 func (s *StepRequest) PATCH(url string) *StepRequestWithOptionalArgs {
-	s.step.Request = &Request{
-		Method: httpPATCH,
-		URL:    url,
+	if s.step.Request != nil {
+		s.step.Request.Method = httpPATCH
+		s.step.Request.URL = url
+	} else {
+		s.step.Request = &Request{
+			Method: httpPATCH,
+			URL:    url,
+		}
 	}
 	return &StepRequestWithOptionalArgs{
 		step: s.step,
@@ -560,7 +683,7 @@ func (s *StepRequest) CallRefCase(tc ITestCase) *StepTestCaseWithOptionalArgs {
 	s.step.TestCase, err = tc.ToTestCase()
 	if err != nil {
 		log.Error().Err(err).Msg("failed to load testcase")
-		os.Exit(1)
+		os.Exit(code.GetErrorCode(err))
 	}
 	return &StepTestCaseWithOptionalArgs{
 		step: s.step,
@@ -573,7 +696,7 @@ func (s *StepRequest) CallRefAPI(api IAPI) *StepAPIWithOptionalArgs {
 	s.step.API, err = api.ToAPI()
 	if err != nil {
 		log.Error().Err(err).Msg("failed to load api")
-		os.Exit(1)
+		os.Exit(code.GetErrorCode(err))
 	}
 	return &StepAPIWithOptionalArgs{
 		step: s.step,
@@ -612,6 +735,52 @@ func (s *StepRequest) SetThinkTime(time float64) *StepThinkTime {
 	}
 }
 
+// SetRendezvous creates a new rendezvous
+func (s *StepRequest) SetRendezvous(name string) *StepRendezvous {
+	s.step.Rendezvous = &Rendezvous{
+		Name: name,
+	}
+	return &StepRendezvous{
+		step: s.step,
+	}
+}
+
+// WebSocket creates a new websocket action
+func (s *StepRequest) WebSocket() *StepWebSocket {
+	s.step.WebSocket = &WebSocketAction{}
+	return &StepWebSocket{
+		step: s.step,
+	}
+}
+
+// Android creates a new android action
+func (s *StepRequest) Android() *StepMobile {
+	s.step.Android = &MobileStep{}
+	return &StepMobile{
+		step: s.step,
+	}
+}
+
+// IOS creates a new ios action
+func (s *StepRequest) IOS() *StepMobile {
+	s.step.IOS = &MobileStep{}
+	return &StepMobile{
+		step: s.step,
+	}
+}
+
+// Shell creates a new shell action
+func (s *StepRequest) Shell(content string) *StepShell {
+	s.step.Shell = &Shell{
+		String:         content,
+		ExpectExitCode: 0,
+	}
+
+	return &StepShell{
+		step: s.step,
+	}
+}
+
 // StepRequestWithOptionalArgs implements IStep interface.
 type StepRequestWithOptionalArgs struct {
 	step *TStep
@@ -619,30 +788,35 @@ type StepRequestWithOptionalArgs struct {
 
 // SetVerify sets whether to verify SSL for current HTTP request.
 func (s *StepRequestWithOptionalArgs) SetVerify(verify bool) *StepRequestWithOptionalArgs {
+	log.Info().Bool("verify", verify).Msg("set step request verify")
 	s.step.Request.Verify = verify
 	return s
 }
 
 // SetTimeout sets timeout for current HTTP request.
-func (s *StepRequestWithOptionalArgs) SetTimeout(timeout float32) *StepRequestWithOptionalArgs {
-	s.step.Request.Timeout = timeout
+func (s *StepRequestWithOptionalArgs) SetTimeout(timeout time.Duration) *StepRequestWithOptionalArgs {
+	log.Info().Float64("timeout(seconds)", timeout.Seconds()).Msg("set step request timeout")
+	s.step.Request.Timeout = timeout.Seconds()
 	return s
 }
 
 // SetProxies sets proxies for current HTTP request.
 func (s *StepRequestWithOptionalArgs) SetProxies(proxies map[string]string) *StepRequestWithOptionalArgs {
+	log.Info().Interface("proxies", proxies).Msg("set step request proxies")
 	// TODO
 	return s
 }
 
 // SetAllowRedirects sets whether to allow redirects for current HTTP request.
 func (s *StepRequestWithOptionalArgs) SetAllowRedirects(allowRedirects bool) *StepRequestWithOptionalArgs {
+	log.Info().Bool("allowRedirects", allowRedirects).Msg("set step request allowRedirects")
 	s.step.Request.AllowRedirects = allowRedirects
 	return s
 }
 
 // SetAuth sets auth for current HTTP request.
 func (s *StepRequestWithOptionalArgs) SetAuth(auth map[string]string) *StepRequestWithOptionalArgs {
+	log.Info().Interface("auth", auth).Msg("set step request auth")
 	// TODO
 	return s
 }
@@ -668,6 +842,14 @@ func (s *StepRequestWithOptionalArgs) WithCookies(cookies map[string]string) *St
 // WithBody sets HTTP request body for current step.
 func (s *StepRequestWithOptionalArgs) WithBody(body interface{}) *StepRequestWithOptionalArgs {
 	s.step.Request.Body = body
+	return s
+}
+
+// WithUpload sets HTTP request body for uploading file(s).
+func (s *StepRequestWithOptionalArgs) WithUpload(upload map[string]interface{}) *StepRequestWithOptionalArgs {
+	// init upload
+	initUpload(s.step)
+	s.step.Request.Upload = upload
 	return s
 }
 
@@ -734,7 +916,13 @@ func (s *StepRequestExtraction) Name() string {
 }
 
 func (s *StepRequestExtraction) Type() StepType {
-	return StepType(fmt.Sprintf("request-%v", s.step.Request.Method))
+	var stepType StepType
+	if s.step.WebSocket != nil {
+		stepType = StepType(fmt.Sprintf("websocket-%v", s.step.WebSocket.Type))
+	} else {
+		stepType = StepType(fmt.Sprintf("request-%v", s.step.Request.Method))
+	}
+	return stepType + stepTypeSuffixExtraction
 }
 
 func (s *StepRequestExtraction) Struct() *TStep {
@@ -742,7 +930,13 @@ func (s *StepRequestExtraction) Struct() *TStep {
 }
 
 func (s *StepRequestExtraction) Run(r *SessionRunner) (*StepResult, error) {
-	return runStepRequest(r, s.step)
+	if s.step.Request != nil {
+		return runStepRequest(r, s.step)
+	}
+	if s.step.WebSocket != nil {
+		return runStepWebSocket(r, s.step)
+	}
+	return nil, errors.New("unexpected protocol type")
 }
 
 // StepRequestValidation implements IStep interface.
@@ -758,7 +952,13 @@ func (s *StepRequestValidation) Name() string {
 }
 
 func (s *StepRequestValidation) Type() StepType {
-	return StepType(fmt.Sprintf("request-%v", s.step.Request.Method))
+	var stepType StepType
+	if s.step.WebSocket != nil {
+		stepType = StepType(fmt.Sprintf("websocket-%v", s.step.WebSocket.Type))
+	} else {
+		stepType = StepType(fmt.Sprintf("request-%v", s.step.Request.Method))
+	}
+	return stepType + stepTypeSuffixValidation
 }
 
 func (s *StepRequestValidation) Struct() *TStep {
@@ -766,7 +966,13 @@ func (s *StepRequestValidation) Struct() *TStep {
 }
 
 func (s *StepRequestValidation) Run(r *SessionRunner) (*StepResult, error) {
-	return runStepRequest(r, s.step)
+	if s.step.Request != nil {
+		return runStepRequest(r, s.step)
+	}
+	if s.step.WebSocket != nil {
+		return runStepWebSocket(r, s.step)
+	}
+	return nil, errors.New("unexpected protocol type")
 }
 
 func (s *StepRequestValidation) AssertEqual(jmesPath string, expected interface{}, msg string) *StepRequestValidation {
@@ -927,6 +1133,17 @@ func (s *StepRequestValidation) AssertStringEqual(jmesPath string, expected inte
 	v := Validator{
 		Check:   jmesPath,
 		Assert:  "string_equals",
+		Expect:  expected,
+		Message: msg,
+	}
+	s.step.Validators = append(s.step.Validators, v)
+	return s
+}
+
+func (s *StepRequestValidation) AssertEqualFold(jmesPath string, expected interface{}, msg string) *StepRequestValidation {
+	v := Validator{
+		Check:   jmesPath,
+		Assert:  "equal_fold",
 		Expect:  expected,
 		Message: msg,
 	}

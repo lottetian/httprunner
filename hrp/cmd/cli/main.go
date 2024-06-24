@@ -1,11 +1,12 @@
 package main
 
 import (
+	"os"
 	"time"
 
 	"github.com/getsentry/sentry-go"
 
-	"github.com/httprunner/httprunner/hrp/cmd"
+	"github.com/httprunner/httprunner/v4/hrp/cmd"
 )
 
 func main() {
@@ -20,5 +21,6 @@ func main() {
 		}
 	}()
 
-	cmd.Execute()
+	exitCode := cmd.Execute()
+	os.Exit(exitCode)
 }

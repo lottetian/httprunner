@@ -2,6 +2,9 @@ package hrp
 
 import (
 	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
 )
 
 var (
@@ -74,17 +77,138 @@ func TestRunRequestPostDataToStruct(t *testing.T) {
 	}
 }
 
-func TestRunRequestRun(t *testing.T) {
+func TestRunRequestStatOn(t *testing.T) {
 	testcase := &TestCase{
 		Config:    NewConfig("test").SetBaseURL("https://postman-echo.com"),
 		TestSteps: []IStep{stepGET, stepPOSTData},
 	}
-	runner := NewRunner(t).SetRequestsLogOn()
-	sessionRunner := runner.NewSessionRunner(testcase)
-	if _, err := stepGET.Run(sessionRunner); err != nil {
-		t.Fatalf("stepGET.Run() error: %v", err)
+	caseRunner, _ := NewRunner(t).SetHTTPStatOn().NewCaseRunner(testcase)
+	sessionRunner := caseRunner.NewSession()
+	if err := sessionRunner.Start(nil); err != nil {
+		t.Fatal()
 	}
-	if _, err := stepPOSTData.Run(sessionRunner); err != nil {
-		t.Fatalf("stepPOSTData.Run() error: %v", err)
+	summary, _ := sessionRunner.GetSummary()
+
+	stat := summary.Records[0].HttpStat
+	if !assert.GreaterOrEqual(t, stat["DNSLookup"], int64(0)) {
+		t.Fatal()
+	}
+	if !assert.Greater(t, stat["TCPConnection"], int64(0)) {
+		t.Fatal()
+	}
+	if !assert.Greater(t, stat["TLSHandshake"], int64(0)) {
+		t.Fatal()
+	}
+	if !assert.Greater(t, stat["ServerProcessing"], int64(0)) {
+		t.Fatal()
+	}
+	if !assert.GreaterOrEqual(t, stat["ContentTransfer"], int64(0)) {
+		t.Fatal()
+	}
+	if !assert.GreaterOrEqual(t, stat["NameLookup"], int64(0)) {
+		t.Fatal()
+	}
+	if !assert.Greater(t, stat["Connect"], int64(0)) {
+		t.Fatal()
+	}
+	if !assert.Greater(t, stat["Pretransfer"], int64(0)) {
+		t.Fatal()
+	}
+	if !assert.Greater(t, stat["StartTransfer"], int64(0)) {
+		t.Fatal()
+	}
+	if !assert.Greater(t, stat["Total"], int64(5)) {
+		t.Fatal()
+	}
+	if !assert.Less(t, stat["Total"]-summary.Records[0].Elapsed, int64(3)) {
+		t.Fatal()
+	}
+
+	// reuse connection
+	stat = summary.Records[1].HttpStat
+	if !assert.Equal(t, int64(0), stat["DNSLookup"]) {
+		t.Fatal()
+	}
+	if !assert.Equal(t, int64(0), stat["TCPConnection"]) {
+		t.Fatal()
+	}
+	if !assert.Equal(t, int64(0), stat["TLSHandshake"]) {
+		t.Fatal()
+	}
+	if !assert.Greater(t, stat["ServerProcessing"], int64(1)) {
+		t.Fatal()
+	}
+	if !assert.Equal(t, int64(0), stat["NameLookup"]) {
+		t.Fatal()
+	}
+	if !assert.Equal(t, int64(0), stat["Connect"]) {
+		t.Fatal()
+	}
+	if !assert.Equal(t, int64(0), stat["Pretransfer"]) {
+		t.Fatal()
+	}
+	if !assert.Greater(t, stat["StartTransfer"], int64(0)) {
+		t.Fatal()
+	}
+	if !assert.Greater(t, stat["Total"], int64(1)) {
+		t.Fatal()
+	}
+	if !assert.Less(t, stat["Total"]-summary.Records[0].Elapsed, int64(100)) {
+		t.Fatal()
+	}
+}
+
+func TestRunCaseWithTimeout(t *testing.T) {
+	r := NewRunner(t)
+
+	// global timeout
+	testcase1 := &TestCase{
+		Config: NewConfig("TestCase1").
+			SetRequestTimeout(10). // set global timeout to 10s
+			SetBaseURL("https://postman-echo.com"),
+		TestSteps: []IStep{
+			NewStep("step1").
+				GET("/delay/1").
+				Validate().
+				AssertEqual("status_code", 200, "check status code"),
+		},
+	}
+	err := r.Run(testcase1)
+	if !assert.NoError(t, err) { // assert no error
+		t.FailNow()
+	}
+
+	testcase2 := &TestCase{
+		Config: NewConfig("TestCase2").
+			SetRequestTimeout(5). // set global timeout to 10s
+			SetBaseURL("https://postman-echo.com"),
+		TestSteps: []IStep{
+			NewStep("step1").
+				GET("/delay/10").
+				Validate().
+				AssertEqual("status_code", 200, "check status code"),
+		},
+	}
+	err = r.Run(testcase2)
+	if !assert.Error(t, err) { // assert error
+		t.FailNow()
+	}
+
+	// step timeout
+	testcase3 := &TestCase{
+		Config: NewConfig("TestCase3").
+			SetRequestTimeout(10).
+			SetBaseURL("https://postman-echo.com"),
+		TestSteps: []IStep{
+			NewStep("step2").
+				GET("/delay/11").
+				SetTimeout(15*time.Second). // set step timeout to 4s
+				Validate().
+				AssertEqual("status_code", 200, "check status code"),
+		},
+	}
+	err = r.Run(testcase3)
+	if !assert.NoError(t, err) {
+		t.FailNow()
 	}
 }

@@ -3,8 +3,9 @@ package hrp
 import (
 	"time"
 
-	"github.com/httprunner/httprunner/hrp/internal/builtin"
 	"github.com/rs/zerolog/log"
+
+	"github.com/httprunner/httprunner/v4/hrp/internal/builtin"
 )
 
 type ThinkTime struct {
@@ -30,8 +31,7 @@ func (s *StepThinkTime) Struct() *TStep {
 
 func (s *StepThinkTime) Run(r *SessionRunner) (*StepResult, error) {
 	thinkTime := s.step.ThinkTime
-	log.Info().Str("name", s.step.Name).
-		Float64("time", thinkTime.Time).Msg("think time")
+	log.Info().Float64("time", thinkTime.Time).Msg("think time")
 
 	stepResult := &StepResult{
 		Name:     s.step.Name,
@@ -39,7 +39,7 @@ func (s *StepThinkTime) Run(r *SessionRunner) (*StepResult, error) {
 		Success:  true,
 	}
 
-	cfg := r.testCase.Config.ThinkTimeSetting
+	cfg := r.caseRunner.parsedConfig.ThinkTimeSetting
 	if cfg == nil {
 		cfg = &ThinkTimeConfig{thinkTimeDefault, nil, 0}
 	}

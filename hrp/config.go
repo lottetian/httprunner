@@ -1,18 +1,17 @@
 package hrp
 
 import (
-	"math/rand"
 	"reflect"
-	"sync"
-	"time"
 
-	"github.com/httprunner/httprunner/hrp/internal/builtin"
+	"github.com/httprunner/httprunner/v4/hrp/internal/builtin"
+	"github.com/httprunner/httprunner/v4/hrp/pkg/uixt"
 )
 
 // NewConfig returns a new constructed testcase config with specified testcase name.
 func NewConfig(name string) *TConfig {
 	return &TConfig{
 		Name:      name,
+		Environs:  make(map[string]string),
 		Variables: make(map[string]interface{}),
 	}
 }
@@ -22,15 +21,22 @@ func NewConfig(name string) *TConfig {
 type TConfig struct {
 	Name              string                 `json:"name" yaml:"name"` // required
 	Verify            bool                   `json:"verify,omitempty" yaml:"verify,omitempty"`
-	BaseURL           string                 `json:"base_url,omitempty" yaml:"base_url,omitempty"`
-	Headers           map[string]string      `json:"headers,omitempty" yaml:"headers,omitempty"`
-	Variables         map[string]interface{} `json:"variables,omitempty" yaml:"variables,omitempty"`
+	BaseURL           string                 `json:"base_url,omitempty" yaml:"base_url,omitempty"`   // deprecated in v4.1, moved to env
+	Headers           map[string]string      `json:"headers,omitempty" yaml:"headers,omitempty"`     // public request headers
+	Environs          map[string]string      `json:"environs,omitempty" yaml:"environs,omitempty"`   // environment variables
+	Variables         map[string]interface{} `json:"variables,omitempty" yaml:"variables,omitempty"` // global variables
 	Parameters        map[string]interface{} `json:"parameters,omitempty" yaml:"parameters,omitempty"`
 	ParametersSetting *TParamsConfig         `json:"parameters_setting,omitempty" yaml:"parameters_setting,omitempty"`
 	ThinkTimeSetting  *ThinkTimeConfig       `json:"think_time,omitempty" yaml:"think_time,omitempty"`
+	WebSocketSetting  *WebSocketConfig       `json:"websocket,omitempty" yaml:"websocket,omitempty"`
+	IOS               []*uixt.IOSDevice      `json:"ios,omitempty" yaml:"ios,omitempty"`
+	Android           []*uixt.AndroidDevice  `json:"android,omitempty" yaml:"android,omitempty"`
+	RequestTimeout    float32                `json:"request_timeout,omitempty" yaml:"request_timeout,omitempty"` // request timeout in seconds
+	CaseTimeout       float32                `json:"case_timeout,omitempty" yaml:"case_timeout,omitempty"`       // testcase timeout in seconds
 	Export            []string               `json:"export,omitempty" yaml:"export,omitempty"`
 	Weight            int                    `json:"weight,omitempty" yaml:"weight,omitempty"`
-	Path              string                 `json:"path,omitempty" yaml:"path,omitempty"` // testcase file path
+	Path              string                 `json:"path,omitempty" yaml:"path,omitempty"`     // testcase file path
+	PluginSetting     *PluginConfig          `json:"plugin,omitempty" yaml:"plugin,omitempty"` // plugin config
 }
 
 // WithVariables sets variables for current testcase.
@@ -69,6 +75,18 @@ func (c *TConfig) SetThinkTime(strategy thinkTimeStrategy, cfg interface{}, limi
 	return c
 }
 
+// SetRequestTimeout sets request timeout in seconds.
+func (c *TConfig) SetRequestTimeout(seconds float32) *TConfig {
+	c.RequestTimeout = seconds
+	return c
+}
+
+// SetCaseTimeout sets testcase timeout in seconds.
+func (c *TConfig) SetCaseTimeout(seconds float32) *TConfig {
+	c.CaseTimeout = seconds
+	return c
+}
+
 // ExportVars specifies variable names to export for current testcase.
 func (c *TConfig) ExportVars(vars ...string) *TConfig {
 	c.Export = vars
@@ -81,8 +99,59 @@ func (c *TConfig) SetWeight(weight int) *TConfig {
 	return c
 }
 
+func (c *TConfig) SetWebSocket(times, interval, timeout, size int64) *TConfig {
+	c.WebSocketSetting = &WebSocketConfig{
+		ReconnectionTimes:    times,
+		ReconnectionInterval: interval,
+		MaxMessageSize:       size,
+	}
+	return c
+}
+
+func (c *TConfig) SetIOS(options ...uixt.IOSDeviceOption) *TConfig {
+	wdaOptions := &uixt.IOSDevice{}
+	for _, option := range options {
+		option(wdaOptions)
+	}
+
+	// each device can have its own settings
+	if wdaOptions.UDID != "" {
+		c.IOS = append(c.IOS, wdaOptions)
+		return c
+	}
+
+	// device UDID is not specified, settings will be shared
+	if len(c.IOS) == 0 {
+		c.IOS = append(c.IOS, wdaOptions)
+	} else {
+		c.IOS[0] = wdaOptions
+	}
+	return c
+}
+
+func (c *TConfig) SetAndroid(options ...uixt.AndroidDeviceOption) *TConfig {
+	uiaOptions := &uixt.AndroidDevice{}
+	for _, option := range options {
+		option(uiaOptions)
+	}
+
+	// each device can have its own settings
+	if uiaOptions.SerialNumber != "" {
+		c.Android = append(c.Android, uiaOptions)
+		return c
+	}
+
+	// device UDID is not specified, settings will be shared
+	if len(c.Android) == 0 {
+		c.Android = append(c.Android, uiaOptions)
+	} else {
+		c.Android[0] = uiaOptions
+	}
+	return c
+}
+
 type ThinkTimeConfig struct {
-	Strategy thinkTimeStrategy `json:"strategy,omitempty" yaml:"strategy,omitempty"` // default、random、limit、multiply、ignore
+	Strategy thinkTimeStrategy `json:"strategy,omitempty" yaml:"strategy,omitempty"` // default、random、multiply、ignore
 	Setting  interface{}       `json:"setting,omitempty" yaml:"setting,omitempty"`   // random(map): {"min_percentage": 0.5, "max_percentage": 1.5}; 10、multiply(float64): 1.5
 	Limit    float64           `json:"limit,omitempty" yaml:"limit,omitempty"`       // limit think time no more than specific time, ignore if value <= 0
 }
@@ -155,62 +224,10 @@ const (
 	thinkTimeDefaultMultiply = 1
 )
 
-var (
-	thinkTimeDefaultRandom = map[string]float64{"min_percentage": 0.5, "max_percentage": 1.5}
-)
+var thinkTimeDefaultRandom = map[string]float64{"min_percentage": 0.5, "max_percentage": 1.5}
 
-type TParamsConfig struct {
-	Strategy  interface{} `json:"strategy,omitempty" yaml:"strategy,omitempty"` // map[string]string、string
-	Iteration int         `json:"iteration,omitempty" yaml:"iteration,omitempty"`
-	Iterators []*Iterator `json:"parameterIterator,omitempty" yaml:"parameterIterator,omitempty"` // 保存参数的迭代器
-}
-
-type Iterator struct {
-	sync.Mutex
-	data      iteratorParamsType
-	strategy  iteratorStrategyType // random, sequential
-	iteration int
-	index     int
-}
-
-type iteratorStrategyType string
-
-const (
-	strategyRandom     iteratorStrategyType = "random"
-	strategySequential iteratorStrategyType = "Sequential"
-)
-
-type iteratorParamsType []map[string]interface{}
-
-func (params iteratorParamsType) Iterator() *Iterator {
-	return &Iterator{
-		data:      params,
-		iteration: len(params),
-		index:     0,
-	}
-}
-
-func (iter *Iterator) HasNext() bool {
-	if iter.iteration == -1 {
-		return true
-	}
-	return iter.index < iter.iteration
-}
-
-func (iter *Iterator) Next() (value map[string]interface{}) {
-	iter.Lock()
-	defer iter.Unlock()
-	if len(iter.data) == 0 {
-		iter.index++
-		return map[string]interface{}{}
-	}
-	if iter.strategy == strategyRandom {
-		randSource := rand.New(rand.NewSource(time.Now().Unix()))
-		randIndex := randSource.Intn(len(iter.data))
-		value = iter.data[randIndex]
-	} else {
-		value = iter.data[iter.index%len(iter.data)]
-	}
-	iter.index++
-	return value
+type PluginConfig struct {
+	Path    string
+	Type    string // bin、so、py
+	Content []byte
 }

@@ -2,12 +2,12 @@ import decimal
 import json
 import os
 import unittest
+from pathlib import Path
 
-from httprunner import loader, utils
-from httprunner.utils import (
-    ExtendJSONEncoder,
-    merge_variables,
-)
+import toml
+
+from httprunner import __version__, loader, utils
+from httprunner.utils import ExtendJSONEncoder, merge_variables, ga4_client
 
 
 class TestUtils(unittest.TestCase):
@@ -121,10 +121,10 @@ class TestUtils(unittest.TestCase):
 
     def test_override_config_variables(self):
         step_variables = {"base_url": "$base_url", "foo1": "bar1"}
-        config_variables = {"base_url": "https://httpbin.org", "foo1": "bar111"}
+        config_variables = {"base_url": "https://postman-echo.com", "foo1": "bar111"}
         self.assertEqual(
             merge_variables(step_variables, config_variables),
-            {"base_url": "https://httpbin.org", "foo1": "bar1"},
+            {"base_url": "https://postman-echo.com", "foo1": "bar1"},
         )
 
     def test_cartesian_product_one(self):
@@ -152,3 +152,20 @@ class TestUtils(unittest.TestCase):
         parameters_content_list = []
         product_list = utils.gen_cartesian_product(*parameters_content_list)
         self.assertEqual(product_list, [])
+
+    def test_versions_are_in_sync(self):
+        """Checks if the pyproject.toml and __version__ in __init__.py are in sync."""
+
+        path = Path(__file__).resolve().parents[1] / "pyproject.toml"
+        pyproject = toml.loads(open(str(path)).read())
+        pyproject_version = pyproject["tool"]["poetry"]["version"]
+        self.assertEqual(pyproject_version, __version__)
+
+    def test_ga4_send_event(self):
+        ga4_client.send_event(
+            "httprunner_debug_event",
+            {
+                "a": 123,
+                "b": 456,
+            },
+        )

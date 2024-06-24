@@ -1,7 +1,7 @@
 package hrp
 
 import (
-	"fmt"
+	"net/url"
 	"sort"
 	"testing"
 	"time"
@@ -10,26 +10,73 @@ import (
 )
 
 func TestBuildURL(t *testing.T) {
-	var url string
-	url = buildURL("https://postman-echo.com", "/get")
-	if url != "https://postman-echo.com/get" {
-		t.Fatalf("buildURL error, %s != 'https://postman-echo.com/get'", url)
+	var preparedURL *url.URL
+
+	preparedURL = buildURL("https://postman-echo.com", "/get", nil)
+	if !assert.Equal(t, preparedURL.String(), "https://postman-echo.com/get/") {
+		t.Fatal()
+	}
+	preparedURL = buildURL("https://postman-echo.com", "get", nil)
+	if !assert.Equal(t, preparedURL.String(), "https://postman-echo.com/get/") {
+		t.Fatal()
+	}
+	preparedURL = buildURL("https://postman-echo.com/", "/get", nil)
+	if !assert.Equal(t, preparedURL.String(), "https://postman-echo.com/get/") {
+		t.Fatal()
 	}
 
-	url = buildURL("https://postman-echo.com/abc/", "/get?a=1&b=2")
-	if url != "https://postman-echo.com/get?a=1&b=2" {
-		t.Fatalf("buildURL error, %s != 'https://postman-echo.com/get'", url)
+	preparedURL = buildURL("https://postman-echo.com/abc/", "/get?a=1&b=2", nil)
+	if !assert.Equal(t, preparedURL.String(), "https://postman-echo.com/abc/get?a=1&b=2") {
+		t.Fatal()
+	}
+	preparedURL = buildURL("https://postman-echo.com/abc", "get?a=1&b=2", nil)
+	if !assert.Equal(t, preparedURL.String(), "https://postman-echo.com/abc/get?a=1&b=2") {
+		t.Fatal()
 	}
 
-	url = buildURL("", "https://postman-echo.com/get")
-	if url != "https://postman-echo.com/get" {
-		t.Fatalf("buildURL error, %s != 'https://postman-echo.com/get'", url)
+	// omit query string in base url
+	preparedURL = buildURL("https://postman-echo.com/abc?x=6&y=9", "/get?a=1&b=2", nil)
+	if !assert.Equal(t, preparedURL.String(), "https://postman-echo.com/abc/get?a=1&b=2") {
+		t.Fatal()
+	}
+
+	preparedURL = buildURL("", "https://postman-echo.com/get", nil)
+	if !assert.Equal(t, preparedURL.String(), "https://postman-echo.com/get/") {
+		t.Fatal()
 	}
 
 	// notice: step request url > config base url
-	url = buildURL("https://postman-echo.com", "https://httpbin.org/get")
-	if url != "https://httpbin.org/get" {
-		t.Fatalf("buildURL error, %s != 'https://httpbin.org/get'", url)
+	preparedURL = buildURL("https://postman-echo.com", "https://httpbin.org/get", nil)
+	if !assert.Equal(t, preparedURL.String(), "https://httpbin.org/get/") {
+		t.Fatal()
+	}
+
+	// websocket url
+	preparedURL = buildURL("wss://ws.postman-echo.com/raw", "", nil)
+	if !assert.Equal(t, preparedURL.String(), "wss://ws.postman-echo.com/raw/") {
+		t.Fatal()
+	}
+
+	preparedURL = buildURL("wss://ws.postman-echo.com", "/raw", nil)
+	if !assert.Equal(t, preparedURL.String(), "wss://ws.postman-echo.com/raw/") {
+		t.Fatal()
+	}
+
+	preparedURL = buildURL("wss://ws.postman-echo.com/raw", "ws://echo.websocket.events", nil)
+	if !assert.Equal(t, preparedURL.String(), "ws://echo.websocket.events/") {
+		t.Fatal()
+	}
+
+	queryParams := url.Values{}
+	queryParams.Add("c", "3")
+	queryParams.Add("d", "4")
+	preparedURL = buildURL("https://postman-echo.com/", "/get/", queryParams)
+	if !assert.Equal(t, preparedURL.String(), "https://postman-echo.com/get?c=3&d=4") {
+		t.Fatal()
+	}
+	preparedURL = buildURL("https://postman-echo.com/abc", "get?a=1&b=2", queryParams)
+	if !assert.Equal(t, preparedURL.String(), "https://postman-echo.com/abc/get?a=1&b=2&c=3&d=4") {
+		t.Fatal()
 	}
 }
 
@@ -46,7 +93,7 @@ func TestRegexCompileVariable(t *testing.T) {
 	for _, expr := range testData {
 		varMatched := regexCompileVariable.FindStringSubmatch(expr)
 		if !assert.Len(t, varMatched, 3) {
-			t.Fail()
+			t.Fatal()
 		}
 	}
 }
@@ -63,7 +110,7 @@ func TestRegexCompileAbnormalVariable(t *testing.T) {
 	for _, expr := range testData {
 		varMatched := regexCompileVariable.FindStringSubmatch(expr)
 		if !assert.Len(t, varMatched, 0) {
-			t.Fail()
+			t.Fatal()
 		}
 	}
 }
@@ -81,7 +128,7 @@ func TestRegexCompileFunction(t *testing.T) {
 	for _, expr := range testData {
 		varMatched := regexCompileFunction.FindStringSubmatch(expr)
 		if !assert.Len(t, varMatched, 3) {
-			t.Fail()
+			t.Fatal()
 		}
 	}
 }
@@ -103,7 +150,7 @@ func TestRegexCompileAbnormalFunction(t *testing.T) {
 	for _, expr := range testData {
 		varMatched := regexCompileFunction.FindStringSubmatch(expr)
 		if !assert.Len(t, varMatched, 0) {
-			t.Fail()
+			t.Fatal()
 		}
 	}
 }
@@ -165,10 +212,10 @@ func TestParseDataStringWithVariables(t *testing.T) {
 	for _, data := range testData {
 		parsedData, err := parser.Parse(data.expr, variablesMapping)
 		if !assert.NoError(t, err) {
-			t.Fail()
+			t.Fatal()
 		}
 		if !assert.Equal(t, data.expect, parsedData) {
-			t.Fail()
+			t.Fatal()
 		}
 	}
 }
@@ -190,10 +237,10 @@ func TestParseDataStringWithUndefinedVariables(t *testing.T) {
 	for _, data := range testData {
 		parsedData, err := parser.Parse(data.expr, variablesMapping)
 		if !assert.Error(t, err) {
-			t.Fail()
+			t.Fatal()
 		}
 		if !assert.Equal(t, data.expect, parsedData) {
-			t.Fail()
+			t.Fatal()
 		}
 	}
 }
@@ -235,10 +282,10 @@ func TestParseDataStringWithVariablesAbnormal(t *testing.T) {
 	for _, data := range testData {
 		parsedData, err := parser.Parse(data.expr, variablesMapping)
 		if !assert.NoError(t, err) {
-			t.Fail()
+			t.Fatal()
 		}
 		if !assert.Equal(t, data.expect, parsedData) {
-			t.Fail()
+			t.Fatal()
 		}
 	}
 }
@@ -266,10 +313,10 @@ func TestParseDataMapWithVariables(t *testing.T) {
 	for _, data := range testData {
 		parsedData, err := parser.Parse(data.expr, variablesMapping)
 		if !assert.NoError(t, err) {
-			t.Fail()
+			t.Fatal()
 		}
 		if !assert.Equal(t, data.expect, parsedData) {
-			t.Fail()
+			t.Fatal()
 		}
 	}
 }
@@ -300,10 +347,10 @@ func TestParseHeaders(t *testing.T) {
 	for _, data := range testData {
 		parsedHeaders, err := parser.ParseHeaders(data.rawHeaders, variablesMapping)
 		if !assert.NoError(t, err) {
-			t.Fail()
+			t.Fatal()
 		}
 		if !assert.Equal(t, data.expectHeaders, parsedHeaders) {
-			t.Fail()
+			t.Fatal()
 		}
 	}
 }
@@ -329,7 +376,7 @@ func TestMergeVariables(t *testing.T) {
 	for _, data := range testData {
 		mergedVariables := mergeVariables(data.stepVariables, data.configVariables)
 		if !assert.Equal(t, data.expectVariables, mergedVariables) {
-			t.Fail()
+			t.Fatal()
 		}
 	}
 }
@@ -365,7 +412,7 @@ func TestMergeMap(t *testing.T) {
 	for _, data := range testData {
 		mergedMap := mergeMap(data.m, data.overriddenMap)
 		if !assert.Equal(t, data.expectMap, mergedMap) {
-			t.Fail()
+			t.Fatal()
 		}
 	}
 }
@@ -396,7 +443,7 @@ func TestMergeSlices(t *testing.T) {
 	for _, data := range testData {
 		mergedSlice := mergeSlices(data.slice, data.overriddenSlice)
 		if !assert.Equal(t, data.expectSlice, mergedSlice) {
-			t.Fail()
+			t.Fatal()
 		}
 	}
 }
@@ -435,7 +482,7 @@ func TestMergeValidators(t *testing.T) {
 	for _, data := range testData {
 		mergedValidators := mergeValidators(data.validators, data.overriddenValidators)
 		if !assert.Equal(t, data.expectValidators, mergedValidators) {
-			t.Fail()
+			t.Fatal()
 		}
 	}
 }
@@ -444,37 +491,37 @@ func TestCallBuiltinFunction(t *testing.T) {
 	parser := newParser()
 
 	// call function without arguments
-	_, err := parser.CallFunc("get_timestamp")
+	_, err := parser.callFunc("get_timestamp")
 	if !assert.NoError(t, err) {
-		t.Fail()
+		t.Fatal()
 	}
 
 	// call function with one argument
 	timeStart := time.Now()
-	_, err = parser.CallFunc("sleep", 1)
+	_, err = parser.callFunc("sleep", 1)
 	if !assert.NoError(t, err) {
-		t.Fail()
+		t.Fatal()
 	}
 	if !assert.Greater(t, time.Since(timeStart), time.Duration(1)*time.Second) {
-		t.Fail()
+		t.Fatal()
 	}
 
 	// call function with one argument
-	result, err := parser.CallFunc("gen_random_string", 10)
+	result, err := parser.callFunc("gen_random_string", 10)
 	if !assert.NoError(t, err) {
-		t.Fail()
+		t.Fatal()
 	}
 	if !assert.Equal(t, 10, len(result.(string))) {
-		t.Fail()
+		t.Fatal()
 	}
 
 	// call function with two argument
-	result, err = parser.CallFunc("max", float64(10), 9.99)
+	result, err = parser.callFunc("max", float64(10), 9.99)
 	if !assert.NoError(t, err) {
-		t.Fail()
+		t.Fatal()
 	}
 	if !assert.Equal(t, float64(10), result.(float64)) {
-		t.Fail()
+		t.Fatal()
 	}
 }
 
@@ -499,10 +546,10 @@ func TestLiteralEval(t *testing.T) {
 	for _, data := range testData {
 		value, err := literalEval(data.expr)
 		if !assert.NoError(t, err) {
-			t.Fail()
+			t.Fatal()
 		}
 		if !assert.Equal(t, data.expect, value) {
-			t.Fail()
+			t.Fatal()
 		}
 	}
 }
@@ -529,10 +576,10 @@ func TestParseFunctionArguments(t *testing.T) {
 	for _, data := range testData {
 		value, err := parseFunctionArguments(data.expr)
 		if !assert.NoError(t, err) {
-			t.Fail()
+			t.Fatal()
 		}
 		if !assert.Equal(t, data.expect, value) {
-			t.Fail()
+			t.Fatal()
 		}
 	}
 }
@@ -558,10 +605,10 @@ func TestParseDataStringWithFunctions(t *testing.T) {
 	for _, data := range testData1 {
 		value, err := parser.Parse(data.expr, variablesMapping)
 		if !assert.NoError(t, err) {
-			t.Fail()
+			t.Fatal()
 		}
 		if !assert.Equal(t, data.expect, len(value.(string))) {
-			t.Fail()
+			t.Fatal()
 		}
 	}
 
@@ -577,10 +624,10 @@ func TestParseDataStringWithFunctions(t *testing.T) {
 	for _, data := range testData2 {
 		value, err := parser.Parse(data.expr, variablesMapping)
 		if !assert.NoError(t, err) {
-			t.Fail()
+			t.Fatal()
 		}
 		if !assert.Equal(t, data.expect, value) {
-			t.Fail()
+			t.Fatal()
 		}
 	}
 }
@@ -595,13 +642,15 @@ func TestConvertString(t *testing.T) {
 		{"123", "123"},
 		{123, "123"},
 		{1.23, "1.23"},
+		{100000000000, "100000000000"}, // avoid exponential notation
+		{100000000000.23, "100000000000.23"},
 		{nil, "<nil>"},
 	}
 
 	for _, data := range testData {
 		value := convertString(data.raw)
 		if !assert.Equal(t, data.expect, value) {
-			t.Fail()
+			t.Fatal()
 		}
 	}
 }
@@ -613,7 +662,7 @@ func TestParseVariables(t *testing.T) {
 	}{
 		{
 			map[string]interface{}{"varA": "$varB", "varB": "$varC", "varC": "123", "a": 1, "b": 2},
-			map[string]interface{}{"varA": "123", "varB": "123", "varC": "123", "a": 1, "b": 2},
+			map[string]interface{}{"varA": "123", "varB": "123", "varC": "123", "a": int64(1), "b": int64(2)},
 		},
 		{
 			map[string]interface{}{"n": 34.5, "a": 12.3, "b": "$n", "varFoo2": "${max($a, $b)}"},
@@ -625,10 +674,10 @@ func TestParseVariables(t *testing.T) {
 	for _, data := range testData {
 		value, err := parser.ParseVariables(data.rawVars)
 		if !assert.NoError(t, err) {
-			t.Fail()
+			t.Fatal()
 		}
 		if !assert.Equal(t, data.expectVars, value) {
-			t.Fail()
+			t.Fatal()
 		}
 	}
 }
@@ -656,10 +705,10 @@ func TestParseVariablesAbnormal(t *testing.T) {
 	for _, data := range testData {
 		value, err := parser.ParseVariables(data.rawVars)
 		if !assert.Error(t, err) {
-			t.Fail()
+			t.Fatal()
 		}
 		if !assert.Equal(t, data.expectVars, value) {
-			t.Fail()
+			t.Fatal()
 		}
 	}
 }
@@ -692,7 +741,7 @@ func TestExtractVariables(t *testing.T) {
 		}
 		sort.Strings(varList)
 		if !assert.Equal(t, data.expectVars, varList) {
-			t.Fail()
+			t.Fatal()
 		}
 	}
 }
@@ -731,137 +780,7 @@ func TestFindallVariables(t *testing.T) {
 		}
 		sort.Strings(varList)
 		if !assert.Equal(t, data.expectVars, varList) {
-			t.Fail()
-		}
-	}
-}
-
-func TestParseParameters(t *testing.T) {
-	testData := []struct {
-		rawVars      map[string]interface{}
-		expectLength int
-	}{
-		{
-			map[string]interface{}{
-				"username-password": fmt.Sprintf("${parameterize(%s/account.csv)}", hrpExamplesDir),
-				"user_agent":        []interface{}{"IOS/10.1", "IOS/10.2"}},
-			6,
-		},
-		{
-			map[string]interface{}{
-				"username-password": [][]interface{}{{"test1", "111111"}, {"test2", "222222"}, {"test3", "333333"}},
-				"user_agent":        []interface{}{"IOS/10.1", "IOS/10.2"},
-				"app_version":       []interface{}{0.3}},
-			6,
-		},
-		{
-			map[string]interface{}{
-				"username-password": [][]interface{}{{"test1", "111111"}, {"test2", "222222"}, {"test3", "333333"}},
-				"user_agent":        []interface{}{"IOS/10.1", "IOS/10.2"},
-				"app_version":       []interface{}{0.3, 0.4, 0.5}},
-			18,
-		},
-		{
-			map[string]interface{}{}, 0,
-		},
-		{
-			nil, 0,
-		},
-	}
-	for _, data := range testData {
-		params, _ := parseParameters(data.rawVars, map[string]interface{}{})
-		value := genCartesianProduct(params)
-		if !assert.Len(t, value, data.expectLength) {
-			t.Fail()
-		}
-	}
-}
-
-func TestParseParametersError(t *testing.T) {
-	testData := []struct {
-		rawVars map[string]interface{}
-	}{
-		{
-			map[string]interface{}{
-				"username_password": fmt.Sprintf("${parameterize(%s/account.csv)}", hrpExamplesDir),
-				"user_agent":        []interface{}{"IOS/10.1", "IOS/10.2"}},
-		},
-		{
-			map[string]interface{}{
-				"username-password": fmt.Sprintf("${parameterize(%s/account.csv)}", hrpExamplesDir),
-				"user-agent":        []interface{}{"IOS/10.1", "IOS/10.2"}},
-		},
-		{
-			map[string]interface{}{
-				"username-password": fmt.Sprintf("${param(%s/account.csv)}", hrpExamplesDir),
-				"user_agent":        []interface{}{"IOS/10.1", "IOS/10.2"}},
-		},
-	}
-	for _, data := range testData {
-		_, err := parseParameters(data.rawVars, map[string]interface{}{})
-		if !assert.Error(t, err) {
-			t.Fail()
-		}
-	}
-}
-
-func TestParseSlice(t *testing.T) {
-	testData := []struct {
-		rawVar1 string
-		rawVar2 interface{}
-		expect  []map[string]interface{}
-	}{
-		{
-			"username-password",
-			[]map[string]interface{}{{"username": "test1", "password": 111111, "other": "111"}, {"username": "test2", "password": 222222, "other": "222"}},
-			[]map[string]interface{}{
-				{"username": "test1", "password": 111111},
-				{"username": "test2", "password": 222222},
-			},
-		},
-		{
-			"username-password",
-			[][]string{{"test1", "111111"}, {"test2", "222222"}},
-			[]map[string]interface{}{
-				{"username": "test1", "password": "111111"},
-				{"username": "test2", "password": "222222"},
-			},
-		},
-		{
-			"app_version",
-			[]float64{3.1, 3.0},
-			[]map[string]interface{}{
-				{"app_version": 3.1},
-				{"app_version": 3.0},
-			},
-		},
-	}
-	for _, data := range testData {
-		value, _ := parseSlice(data.rawVar1, data.rawVar2)
-		if !assert.Equal(t, data.expect, value) {
-			t.Fail()
-		}
-	}
-}
-
-func TestParseSliceError(t *testing.T) {
-	testData := []struct {
-		rawVar1 string
-		rawVar2 interface{}
-	}{
-		{
-			"app_version",
-			123,
-		},
-		{
-			"app_version",
-			"123",
-		},
-	}
-	for _, data := range testData {
-		_, err := parseSlice(data.rawVar1, data.rawVar2)
-		if !assert.Error(t, err) {
-			t.Fail()
+			t.Fatal()
 		}
 	}
 }

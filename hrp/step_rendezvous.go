@@ -44,7 +44,7 @@ func (s *StepRendezvous) Run(r *SessionRunner) (*StepResult, error) {
 	}
 
 	// pass current rendezvous if already released, activate rendezvous sequentially after spawn done
-	if rendezvous.isReleased() || !isPreRendezvousAllReleased(rendezvous, r.testCase.ToTCase()) || !rendezvous.isSpawnDone() {
+	if rendezvous.isReleased() || !isPreRendezvousAllReleased(rendezvous, r.caseRunner.testCase.ToTCase()) || !rendezvous.isSpawnDone() {
 		return stepResult, nil
 	}
 
@@ -84,16 +84,6 @@ func isPreRendezvousAllReleased(rendezvous *Rendezvous, testCase *TCase) bool {
 		}
 	}
 	return true
-}
-
-// Rendezvous creates a new rendezvous
-func (s *StepRequest) Rendezvous(name string) *StepRendezvous {
-	s.step.Rendezvous = &Rendezvous{
-		Name: name,
-	}
-	return &StepRendezvous{
-		step: s.step,
-	}
 }
 
 // WithUserNumber sets the user number needed to release the current rendezvous
@@ -165,9 +155,9 @@ func (r *Rendezvous) setReleased() {
 }
 
 func initRendezvous(testcase *TestCase, total int64) []*Rendezvous {
-	tCase := testcase.ToTCase()
 	var rendezvousList []*Rendezvous
-	for _, step := range tCase.TestSteps {
+	for _, s := range testcase.TestSteps {
+		step := s.Struct()
 		if step.Rendezvous == nil {
 			continue
 		}
@@ -198,16 +188,20 @@ func initRendezvous(testcase *TestCase, total int64) []*Rendezvous {
 	return rendezvousList
 }
 
-func waitRendezvous(rendezvousList []*Rendezvous) {
+func (r *Rendezvous) updateRendezvousNumber(number int64) {
+	atomic.StoreInt64(&r.Number, int64(float32(number)*r.Percent))
+}
+
+func waitRendezvous(rendezvousList []*Rendezvous, b *HRPBoomer) {
 	if rendezvousList != nil {
 		lastRendezvous := rendezvousList[len(rendezvousList)-1]
 		for _, rendezvous := range rendezvousList {
-			go waitSingleRendezvous(rendezvous, rendezvousList, lastRendezvous)
+			go waitSingleRendezvous(rendezvous, rendezvousList, lastRendezvous, b)
 		}
 	}
 }
 
-func waitSingleRendezvous(rendezvous *Rendezvous, rendezvousList []*Rendezvous, lastRendezvous *Rendezvous) {
+func waitSingleRendezvous(rendezvous *Rendezvous, rendezvousList []*Rendezvous, lastRendezvous *Rendezvous, b *HRPBoomer) {
 	for {
 		// cycle start: block current checking until current rendezvous activated
 		<-rendezvous.activateChan
@@ -251,6 +245,8 @@ func waitSingleRendezvous(rendezvous *Rendezvous, rendezvousList []*Rendezvous, 
 		if rendezvous == lastRendezvous {
 			for _, r := range rendezvousList {
 				r.reset()
+				// dynamic adjustment based on the number of concurrent users
+				r.updateRendezvousNumber(int64(b.GetSpawnCount()))
 			}
 		} else {
 			<-lastRendezvous.releaseChan

@@ -2,6 +2,7 @@ import os
 import unittest
 
 from httprunner import compat, exceptions, loader
+from httprunner.utils import HTTP_BIN_URL
 
 
 class TestCompat(unittest.TestCase):
@@ -9,11 +10,6 @@ class TestCompat(unittest.TestCase):
         loader.project_meta = None
 
     def test_convert_variables(self):
-        raw_variables = [{"var1": 1}, {"var2": "val2"}]
-        self.assertEqual(
-            compat.convert_variables(raw_variables, "examples/data/a-b.c/1.yml"),
-            {"var1": 1, "var2": "val2"},
-        )
         raw_variables = {"var1": 1, "var2": "val2"}
         self.assertEqual(
             compat.convert_variables(raw_variables, "examples/data/a-b.c/1.yml"),
@@ -31,26 +27,59 @@ class TestCompat(unittest.TestCase):
         with self.assertRaises(exceptions.TestCaseFormatError):
             compat.convert_variables(None, "examples/data/a-b.c/1.yml")
 
-    def test_convert_jmespath(self):
+    def test_convert_request(self):
+        request_with_json_body = {
+            "method": "POST",
+            "url": "https://postman-echo.com/post",
+            "headers": {"Content-Type": "application/json"},
+            "body": {"k1": "v1", "k2": "v2"},
+        }
+        self.assertEqual(
+            compat._convert_request(request_with_json_body),
+            {
+                "method": "POST",
+                "url": "https://postman-echo.com/post",
+                "headers": {"Content-Type": "application/json"},
+                "json": {"k1": "v1", "k2": "v2"},
+            },
+        )
 
+        request_with_text_body = {
+            "method": "POST",
+            "url": "https://postman-echo.com/post",
+            "headers": {"Content-Type": "text/plain"},
+            "body": "have a nice day",
+        }
+        self.assertEqual(
+            compat._convert_request(request_with_text_body),
+            {
+                "method": "POST",
+                "url": "https://postman-echo.com/post",
+                "headers": {"Content-Type": "text/plain"},
+                "data": "have a nice day",
+            },
+        )
+
+    def test_convert_jmespath(self):
         self.assertEqual(compat._convert_jmespath("content.abc"), "body.abc")
         self.assertEqual(compat._convert_jmespath("json.abc"), "body.abc")
         self.assertEqual(
             compat._convert_jmespath("headers.Content-Type"), 'headers."Content-Type"'
         )
         self.assertEqual(
-            compat._convert_jmespath('headers."Content-Type"'), 'headers."Content-Type"'
+            compat._convert_jmespath("headers.User-Agent"), 'headers."User-Agent"'
         )
         self.assertEqual(
-            compat._convert_jmespath("body.data.buildings.0.building_id"),
-            "body.data.buildings[0].building_id",
+            compat._convert_jmespath('headers."Content-Type"'), 'headers."Content-Type"'
         )
         self.assertEqual(
             compat._convert_jmespath("body.users[-1]"),
             "body.users[-1]",
         )
-        with self.assertRaises(SystemExit):
-            compat._convert_jmespath("2.buildings.0.building_id")
+        self.assertEqual(
+            compat._convert_jmespath("body.result.WorkNode_-1"),
+            "body.result.WorkNode_-1",
+        )
 
     def test_convert_extractors(self):
         self.assertEqual(
@@ -60,11 +89,11 @@ class TestCompat(unittest.TestCase):
             {"varA": "body.varA", "varB": "body.varB"},
         )
         self.assertEqual(
-            compat._convert_extractors([{"varA": "content.0.varA"}]),
+            compat._convert_extractors([{"varA": "content[0].varA"}]),
             {"varA": "body[0].varA"},
         )
         self.assertEqual(
-            compat._convert_extractors({"varA": "content.0.varA"}),
+            compat._convert_extractors({"varA": "content[0].varA"}),
             {"varA": "body[0].varA"},
         )
 
@@ -80,11 +109,11 @@ class TestCompat(unittest.TestCase):
             [{"eq": ["body.abc", 201]}],
         )
         self.assertEqual(
-            compat._convert_validators([{"eq": ["content.0.name", 201]}]),
+            compat._convert_validators([{"eq": ["content[0].name", 201]}]),
             [{"eq": ["body[0].name", 201]}],
         )
 
-    def test_ensure_testcase_v3_api(self):
+    def test_ensure_testcase_v4_api(self):
         api_content = {
             "name": "get with params",
             "request": {
@@ -94,10 +123,10 @@ class TestCompat(unittest.TestCase):
                 "headers": {"User-Agent": "HttpRunner/3.0"},
             },
             "extract": [{"varA": "content.varA"}, {"user_agent": "headers.User-Agent"}],
-            "validate": [{"eq": ["content.varB", 200]}, {"lt": ["json.0.varC", 0]}],
+            "validate": [{"eq": ["content.varB", 200]}, {"lt": ["json[0].varC", 0]}],
         }
         self.assertEqual(
-            compat.ensure_testcase_v3_api(api_content),
+            compat.ensure_testcase_v4_api(api_content),
             {
                 "config": {
                     "name": "get with params",
@@ -125,9 +154,9 @@ class TestCompat(unittest.TestCase):
             },
         )
 
-    def test_ensure_testcase_v3(self):
+    def test_ensure_testcase_v4(self):
         testcase_content = {
-            "config": {"name": "xxx", "base_url": "https://httpbin.org"},
+            "config": {"name": "xxx", "base_url": HTTP_BIN_URL},
             "teststeps": [
                 {
                     "name": "get with params",
@@ -143,15 +172,15 @@ class TestCompat(unittest.TestCase):
                     ],
                     "validate": [
                         {"eq": ["content.varB", 200]},
-                        {"lt": ["json.0.varC", 0]},
+                        {"lt": ["json[0].varC", 0]},
                     ],
                 }
             ],
         }
         self.assertEqual(
-            compat.ensure_testcase_v3(testcase_content),
+            compat.ensure_testcase_v4(testcase_content),
             {
-                "config": {"name": "xxx", "base_url": "https://httpbin.org"},
+                "config": {"name": "xxx", "base_url": HTTP_BIN_URL},
                 "teststeps": [
                     {
                         "name": "get with params",

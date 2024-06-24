@@ -3,7 +3,7 @@ package tests
 import (
 	"testing"
 
-	"github.com/httprunner/httprunner/hrp"
+	"github.com/httprunner/httprunner/v4/hrp"
 )
 
 // reference extracted variables for validation in the same step
@@ -18,6 +18,7 @@ func TestCaseExtractStepSingle(t *testing.T) {
 					"var1":               "bar1",
 					"agent":              "HttpRunnerPlus",
 					"expectedStatusCode": 200,
+					"jmespathFoo1":       "body.args.foo1",
 				}).
 				GET("/get").
 				WithParams(map[string]interface{}{"foo1": "$var1", "foo2": "bar2"}).
@@ -25,7 +26,7 @@ func TestCaseExtractStepSingle(t *testing.T) {
 				Extract().
 				WithJmesPath("status_code", "statusCode").
 				WithJmesPath("headers.\"Content-Type\"", "contentType").
-				WithJmesPath("body.args.foo1", "varFoo1").
+				WithJmesPath("$jmespathFoo1", "varFoo1").
 				Validate().
 				AssertEqual("$statusCode", "$expectedStatusCode", "check status code").                      // assert with extracted variable from current step
 				AssertEqual("$contentType", "application/json; charset=utf-8", "check header Content-Type"). // assert with extracted variable from current step

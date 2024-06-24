@@ -2,20 +2,25 @@ config:
   name: "request methods testcase: validate with parameters"
   parameters:
     user_agent: [ "iOS/10.1", "iOS/10.2" ]
-    username-password: ${parameterize(examples/hrp/account.csv)}
+    username-password: ${parameterize($file)}
   parameters_setting:
-    strategy:
-      user_agent: "sequential"
-      username-password: "random"
-    iteration: 6
+    pick_order: "random"
+    strategies:
+      user_agent:
+        name: "user-identity"
+        pick_order: "sequential"
+      username-password:
+        name: "user-info"
+    limit: 6
   variables:
     app_version: v1
     user_agent: iOS/10.3
+    file: examples/hrp/account.csv
   base_url: "https://postman-echo.com"
   verify: False
 
 teststeps:
-  - name: get with params
+  - name: "get with user: $username"
     variables:
       foo1: $username
       foo2: $password

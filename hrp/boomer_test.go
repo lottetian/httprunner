@@ -10,7 +10,7 @@ func TestBoomerStandaloneRun(t *testing.T) {
 	defer removeHashicorpGoPlugin()
 
 	testcase1 := &TestCase{
-		Config: NewConfig("TestCase1").SetBaseURL("http://httpbin.org"),
+		Config: NewConfig("TestCase1").SetBaseURL("https://postman-echo.com"),
 		TestSteps: []IStep{
 			NewStep("headers").
 				GET("/headers").
@@ -25,10 +25,10 @@ func TestBoomerStandaloneRun(t *testing.T) {
 			NewStep("TestCase3").CallRefCase(&TestCase{Config: NewConfig("TestCase3")}),
 		},
 	}
-	testcase2 := &demoTestCaseWithPluginJSONPath
+	testcase2 := TestCasePath(demoTestCaseWithPluginJSONPath)
 
-	b := NewBoomer(2, 1)
-	go b.Run(testcase1, testcase2)
+	b := NewStandaloneBoomer(2, 1)
+	go b.Run(testcase1, &testcase2)
 	time.Sleep(5 * time.Second)
 	b.Quit()
 }
